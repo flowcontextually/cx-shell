@@ -1,12 +1,12 @@
-# The Contextual Shell (`cx`) by Contextually
+# The Contextual Shell (`cx`) by Flow Contextually
 
 <!-- <p align="center"> -->
-  <!-- TODO: Replace this with a short, powerful GIF of the shell in action -->
-  <!-- A great example: cx init, cx, connect user:petstore --as api, api.getPetById(petId=1) -->
+  <!-- TODO: Record and add a short GIF of the shell in action: -->
+  <!-- cx init -> cx -> connect user:petstore --as api -> api.getPetById(petId=1) -->
   <!-- <img src="placeholder.gif" alt="Contextually Shell Demo"> -->
 <!-- </p> -->
 
-Welcome to the **Contextual Shell**, a declarative, multi-stage automation platform for modern data and operations teams. `cx` is the core command-line application for the Contextually platform, a universal computational fabric where work retains its full context as it flows between different tools, people, and AI agents.
+Welcome to the **Contextual Shell**, a declarative, multi-stage automation platform for modern data and operations teams. `cx` is the core command-line application for the **Contextually** platform, a universal computational fabric where work retains its full context as it flows between different tools, people, and AI agents.
 
 ---
 
@@ -23,9 +23,9 @@ Download the latest pre-compiled binary for your operating system from our [**Gi
 ```bash
 # Replace v0.1.0 with the latest version number
 VERSION="v0.1.0"
-# For Intel Macs/Linux
+# For Intel Macs/Linux -> ARCH="x86_64"
+# For Apple Silicon Macs -> ARCH="arm64"
 ARCH="x86_64"
-# For Apple Silicon (M1/M2/M3) Macs, use ARCH="arm64"
 
 curl -L -o cx.tar.gz "https://github.com/flowcontextually/cx-shell/releases/download/${VERSION}/cx-${VERSION}-linux-${ARCH}.tar.gz"
 tar -xzf cx.tar.gz
@@ -78,11 +78,11 @@ cx> api.getPetById(petId=1)
 
 ## 📚 Documentation
 
-For full documentation, tutorials, and architectural deep dives, please visit our [**official documentation site**](https://docs.flowcontextually.com).
+For full documentation, tutorials, and architectural deep dives, please visit our **official documentation site**.
 
 ## 🤝 Contributing
 
-We welcome contributions of all kinds! The most valuable way to contribute is by adding new integrations to our public [**Blueprint Registry**](https://github.com/flowcontextually/blueprints).
+We welcome contributions of all kinds! The most valuable way to contribute is by adding new integrations to our public **Blueprint Registry**.
 
 ### Setting up a Development Environment
 
@@ -91,20 +91,23 @@ If you'd like to contribute to the core `cx-shell` application, you'll need the 
 - Python 3.12+
 - `uv` (installed via `pip install uv`)
 
-```bash
-# 1. Clone the repository and our schemas library
-git clone https://github.com/flowcontextually/cx-shell.git
-git clone https://github.com/flowcontextually/shared-schemas.git
+The setup is now streamlined. The `cx-core-schemas` dependency is automatically handled.
 
-# 2. Navigate into the cx-shell directory
+```bash
+# 1. Clone the repository
+git clone https://github.com/flowcontextually/cx-shell.git
 cd cx-shell
 
-# 3. Create the virtual environment
+# 2. Create the virtual environment
 uv venv
 
-# 4. Install all dependencies in editable mode
-# This installs shared-schemas from the sibling directory.
-uv pip install -e .[all] -e ../shared-schemas
+# 3. Install all dependencies
+# This automatically fetches cx-core-schemas from GitHub.
+uv pip install -e .[all]
+
+# 4. Verify the installation
+source .venv/bin/activate
+cx --help
 ```
 
 ---
