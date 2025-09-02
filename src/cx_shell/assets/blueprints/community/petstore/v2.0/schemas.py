@@ -50,3 +50,53 @@ class User(BaseModel):
     phone: Optional[str] = None
     userStatus: Optional[int] = None
 
+
+class UploadfileParameters(BaseModel):
+    petId: int
+
+
+class FindpetsbystatusParameters(BaseModel):
+    status: List
+
+
+class FindpetsbytagsParameters(BaseModel):
+    tags: List
+
+
+class GetpetbyidParameters(BaseModel):
+    petId: int
+
+
+class UpdatepetwithformParameters(BaseModel):
+    petId: int
+
+
+class DeletepetParameters(BaseModel):
+    api_key: Optional[str] = None
+    petId: int
+
+
+class GetorderbyidParameters(BaseModel):
+    orderId: int
+
+
+class DeleteorderParameters(BaseModel):
+    orderId: int
+
+
+class GetuserbynameParameters(BaseModel):
+    username: str
+
+
+class UpdateuserParameters(BaseModel):
+    username: str
+
+
+class DeleteuserParameters(BaseModel):
+    username: str
+
+
+class LoginuserParameters(BaseModel):
+    username: str
+    password: str
+

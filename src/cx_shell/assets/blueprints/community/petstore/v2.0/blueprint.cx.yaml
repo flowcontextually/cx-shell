@@ -10,6 +10,7 @@ browse_config:
     uploadFile:
       http_method: POST
       api_endpoint: /pet/{{ petId }}/uploadImage
+      parameters_model: schemas.UploadfileParameters
     addPet:
       http_method: POST
       api_endpoint: /pet
@@ -23,18 +24,23 @@ browse_config:
     findPetsByStatus:
       http_method: GET
       api_endpoint: /pet/findByStatus
+      parameters_model: schemas.FindpetsbystatusParameters
     findPetsByTags:
       http_method: GET
       api_endpoint: /pet/findByTags
+      parameters_model: schemas.FindpetsbytagsParameters
     getPetById:
       http_method: GET
       api_endpoint: /pet/{{ petId }}
+      parameters_model: schemas.GetpetbyidParameters
     updatePetWithForm:
       http_method: POST
       api_endpoint: /pet/{{ petId }}
+      parameters_model: schemas.UpdatepetwithformParameters
     deletePet:
       http_method: DELETE
       api_endpoint: /pet/{{ petId }}
+      parameters_model: schemas.DeletepetParameters
     getInventory:
       http_method: GET
       api_endpoint: /store/inventory
@@ -46,26 +52,32 @@ browse_config:
     getOrderById:
       http_method: GET
       api_endpoint: /store/order/{{ orderId }}
+      parameters_model: schemas.GetorderbyidParameters
     deleteOrder:
       http_method: DELETE
       api_endpoint: /store/order/{{ orderId }}
+      parameters_model: schemas.DeleteorderParameters
     createUsersWithListInput:
       http_method: POST
       api_endpoint: /user/createWithList
     getUserByName:
       http_method: GET
       api_endpoint: /user/{{ username }}
+      parameters_model: schemas.GetuserbynameParameters
     updateUser:
       http_method: PUT
       api_endpoint: /user/{{ username }}
+      parameters_model: schemas.UpdateuserParameters
       payload_constructor:
         _constructor: schemas.User
     deleteUser:
       http_method: DELETE
       api_endpoint: /user/{{ username }}
+      parameters_model: schemas.DeleteuserParameters
     loginUser:
       http_method: GET
       api_endpoint: /user/login
+      parameters_model: schemas.LoginuserParameters
     logoutUser:
       http_method: GET
       api_endpoint: /user/logout
