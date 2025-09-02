@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import shutil
 from pathlib import Path
 import sys
@@ -8,6 +9,7 @@ import logging
 
 import typer
 from rich.console import Console
+from rich.traceback import Traceback
 
 # --- Local Application Imports ---
 from cx_shell.engine.connector.cli import app as connector_app
@@ -16,6 +18,7 @@ from cx_shell.engine.connector.service import ConnectorService
 from cx_shell.interactive.main import start_repl
 from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
 from cx_shell.management.connection_manager import ConnectionManager
+from cx_shell.state import APP_STATE
 
 # from cx_shell.utils import get_asset_path # Assuming you create this file
 # We do not need the utils here, so the import can be removed if not used elsewhere
@@ -55,22 +58,39 @@ def setup_logging(verbose: bool):
             root_logger.removeHandler(handler)
 
 
-connection_app = typer.Typer(
-    name="connection", help="Manage your local connections.", no_args_is_help=True
-)
+def handle_exceptions(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        console = Console(stderr=True)
+        try:
+            return func(*args, **kwargs)
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            # Read from the central state object
+            if APP_STATE.verbose_mode:
+                console.print(
+                    Traceback.from_exception(
+                        type(e), e, e.__traceback__, show_locals=True
+                    )
+                )
+            raise typer.Exit(code=1)
+
+    return wrapper
 
 
 # --- Main Application Definition ---
 app = typer.Typer(
     name="cx",
-    help="""
-    Welcome to the Contextual Shell!
-
-    A declarative, multi-stage automation platform for modern data and ops teams.
-    """,
+    help="Welcome to the Contextual Shell!\n\nA declarative, multi-stage automation platform.",
     no_args_is_help=False,
     invoke_without_command=True,
     rich_markup_mode="markdown",
+)
+
+connection_app = typer.Typer(
+    name="connection", help="Manage your local connections.", no_args_is_help=True
 )
 
 
@@ -78,18 +98,18 @@ app = typer.Typer(
 def main_callback(
     ctx: typer.Context,
     verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Enable verbose DEBUG logging."
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose DEBUG logging for detailed tracebacks.",
     ),
 ):
-    """
-    The main callback for the cx command. Sets up logging and starts the REPL if no subcommand is invoked.
-    """
+    APP_STATE.verbose_mode = verbose
     setup_logging(verbose)
     if ctx.invoked_subcommand is None:
         start_repl()
 
 
-# --- Subcommand Groups ---
 app.add_typer(
     connector_app,
     name="extract",
@@ -109,6 +129,7 @@ app.add_typer(connection_app, name="connection")
 
 
 @app.command()
+@handle_exceptions
 def init():
     """
     Initializes the cx shell environment in your home directory (~/.cx).
@@ -126,7 +147,7 @@ def init():
     secrets_dir = CX_HOME / "secrets"
     user_blueprints_dir = BLUEPRINTS_BASE_PATH / "user"
     sample_blueprint_target_dir = (
-        BLUEPRINTS_BASE_PATH / "community" / "petstore" / "v2.0"
+        BLUEPRINTS_BASE_PATH / "community" / "github" / "v0.1.0"
     )
 
     dirs_to_create = [
@@ -140,6 +161,13 @@ def init():
         d.mkdir(parents=True, exist_ok=True)
         console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
 
+    github_conn = """
+name: "GitHub Public API"
+id: "user:github"
+api_catalog_id: "community/github@v0.1.0"
+auth_method_type: "none"
+"""
+
     fs_generic_conn = """
 name: "Local Filesystem (Generic Root)"
 id: "user:fs_generic"
@@ -151,13 +179,6 @@ catalog:
   id: "catalog:internal-filesystem"
   name: "Local Filesystem"
   connector_provider_key: "fs-declarative"
-"""
-
-    petstore_conn = """
-name: "Sample Petstore API"
-id: "user:petstore"
-api_catalog_id: "community/petstore@v2.0"
-auth_method_type: "none"
 """
 
     smart_fetcher_conn = """
@@ -185,7 +206,7 @@ catalog:
 
     files_to_write = {
         connections_dir / "fs_generic.conn.yaml": fs_generic_conn,
-        connections_dir / "petstore.conn.yaml": petstore_conn,
+        connections_dir / "github.conn.yaml": github_conn,
         connections_dir / "system_smart_fetcher.conn.yaml": smart_fetcher_conn,
         connections_dir / "system_python_sandbox.conn.yaml": python_sandbox_conn,
     }
@@ -199,31 +220,32 @@ catalog:
 
     try:
         source_assets_dir = Path(__file__).parent / "assets"
-        petstore_blueprint_source = (
-            source_assets_dir / "blueprints" / "community" / "petstore" / "v2.0"
+        github_blueprint_source = (
+            source_assets_dir / "blueprints" / "community" / "github" / "v0.1.0"
         )
 
-        if petstore_blueprint_source.is_dir():
-            for file_path in petstore_blueprint_source.glob("*"):
-                shutil.copy(file_path, sample_blueprint_target_dir)
+        if github_blueprint_source.is_dir():
+            shutil.copytree(
+                github_blueprint_source, sample_blueprint_target_dir, dirs_exist_ok=True
+            )
             console.print(
                 f"✅ Copied sample blueprint to: [dim]{sample_blueprint_target_dir}[/dim]"
             )
         else:
             console.print(
-                f"[bold yellow]Warning:[/bold yellow] Could not find bundled sample blueprint at [dim]{petstore_blueprint_source}[/dim]. `connect user:petstore` may fail."
+                f"[bold yellow]Warning:[/bold yellow] Could not find bundled sample blueprint at [dim]{github_blueprint_source}[/dim]. `connect user:github` may fail."
             )
-
     except Exception as e:
         console.print(f"[bold red]Error copying sample blueprint:[/bold red] {e}")
 
     console.print("\n[bold green]Initialization complete![/bold green]")
-    console.print("Run `cx` to start the interactive shell and try the tutorial:")
-    console.print("  1. `connect user:petstore --as api`")
-    console.print("  2. `api.getPetById(petId=1)`")
+    console.print("Run `cx` to start the interactive shell and try the new tutorial:")
+    console.print("  1. `connect user:github --as gh`")
+    console.print('  2. `gh.getUser(username="torvalds")`')
 
 
 @app.command()
+@handle_exceptions
 def compile(
     spec_source: str = typer.Argument(
         ..., help="The path or URL to the OpenAPI/Swagger specification file."
@@ -302,6 +324,7 @@ def compile(
 
 
 @connection_app.command("list")
+@handle_exceptions
 def connection_list():
     """Lists all locally configured connections."""
     manager = ConnectionManager()
@@ -309,6 +332,7 @@ def connection_list():
 
 
 @connection_app.command("create")
+@handle_exceptions
 def connection_create(
     # The blueprint is now a standard option that can guide interactive mode.
     blueprint: Optional[str] = typer.Option(

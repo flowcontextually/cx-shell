@@ -23,6 +23,8 @@ from .providers.sql.trino_strategy import TrinoStrategy
 from .providers.fs.declarative_fs_strategy import DeclarativeFilesystemStrategy
 from .providers.py.sandboxed_python_strategy import SandboxedPythonStrategy
 from .providers.internal.smart_fetcher_strategy import SmartFetcherStrategy
+from ...state import APP_STATE
+
 
 from .vfs_reader import LocalVfsReader
 
@@ -198,23 +200,26 @@ class ConnectorService:
 
     async def test_connection(self, connection_source: str) -> Dict[str, Any]:
         """
-        Tests a connection from any valid source and updates its status in the
-        database if running in integrated mode.
+        Tests a connection from any valid source.
 
-        This method is backward compatible and returns a status dictionary.
+        This method encapsulates the entire connection testing logic. It resolves
+        the connection and its secrets, finds the correct strategy, and executes
+        the test. It is designed to never raise an exception, instead returning
+        a dictionary with a 'status' and 'message' key.
 
         Args:
-            connection_source: The source identifier (e.g., 'db:conn:123', 'file:./path').
+            connection_source: The identifier for the connection (e.g., 'user:my-db').
 
         Returns:
-            A dictionary with 'status' and 'message' keys indicating the outcome.
+            A dictionary indicating the outcome, e.g.,
+            {'status': 'success', 'message': '...'} or
+            {'status': 'error', 'message': 'Login failed...'}.
         """
         log = logger.bind(connection_source=connection_source)
         connection_id_for_update = None
         connection_name = "unknown"
 
         try:
-            # Determine if this is a database connection to update its status later
             if connection_source.startswith("db:"):
                 connection_id_for_update = connection_source.split(":", 1)[1]
 
@@ -222,32 +227,37 @@ class ConnectorService:
             connection_name = connection.name
             strategy = self._get_strategy_for_connection_model(connection)
 
-            # All strategies now uniformly accept the Connection model
+            # Delegate the actual test to the appropriate strategy.
             await strategy.test_connection(connection, secrets)
 
-            # If successful and in integrated mode, update the DB status
+            # --- Success Path ---
+            # In a future integrated mode, this is where we would update the DB status.
             if connection_id_for_update and self.db:
-                update_query = "UPDATE <record>$conn_id SET status = 'connected', last_tested_at = time::now();"
-                await self.db.query(update_query, {"conn_id": connection_id_for_update})
+                # Placeholder for DB update logic
+                pass
 
+            log.info("Connection test successful.", connection_name=connection_name)
             return {
                 "status": "success",
                 "message": f"Connection test for '{connection_name}' successful.",
             }
+
         except Exception as e:
-            log.error("Connection test failed.", error=str(e), exc_info=True)
-            # If failed and in integrated mode, update the DB status to 'error'
+            # --- Failure Path ---
+            # Catch ANY exception from the process (e.g., file not found, login failed, network error)
+            # and package it into a clean, user-facing error message.
+            # Only include the verbose traceback if the user asked for it.
+            log.error(
+                "Connection test failed.",
+                connection_name=connection_name,
+                error=str(e),
+                exc_info=APP_STATE.verbose_mode,
+            )
+            # In a future integrated mode, update the DB status to 'error'.
             if connection_id_for_update and self.db:
-                try:
-                    update_query_on_fail = "UPDATE <record>$conn_id SET status = 'error', last_tested_at = time::now();"
-                    await self.db.query(
-                        update_query_on_fail, {"conn_id": connection_id_for_update}
-                    )
-                except Exception as db_err:
-                    log.error(
-                        "Failed to update connection status to 'error'.",
-                        db_error=str(db_err),
-                    )
+                # Placeholder for DB update logic
+                pass
+
             return {"status": "error", "message": str(e)}
 
     @asynccontextmanager

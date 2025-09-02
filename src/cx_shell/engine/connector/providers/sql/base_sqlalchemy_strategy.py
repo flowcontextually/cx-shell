@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 
 from ...utils import safe_serialize
 from ..base import BaseConnectorStrategy
+from .....state import APP_STATE
+
 
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
@@ -65,7 +67,12 @@ class BaseSqlAlchemyStrategy(BaseConnectorStrategy):
             log.info("sqlalchemy.test_connection.success")
             return True
         except Exception as e:
-            log.error("sqlalchemy.test_connection.failed", error=str(e), exc_info=True)
+            # Log the error, but only include the full traceback if in verbose mode.
+            log.error(
+                "sqlalchemy.test_connection.failed",
+                error=str(e),
+                exc_info=APP_STATE.verbose_mode,
+            )
             raise ConnectionError(f"Database connection test failed: {e}") from e
 
     async def execute_query(

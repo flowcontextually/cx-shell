@@ -54,45 +54,36 @@ class ConnectionResolver:
         """
         parts = blueprint_match.groupdict()
         namespace, name, version = parts["namespace"], parts["name"], parts["version"]
+
         local_path = BLUEPRINTS_BASE_PATH / namespace / name / version
 
-        # If the directory already exists and has content, we're done.
         if local_path.is_dir() and any(local_path.iterdir()):
             logger.debug(
                 "Blueprint package found in local cache.", path=str(local_path)
             )
             return
 
-        # --- On-Demand Download and Unzip Logic ---
-        # We construct a predictable tag and asset name based on a convention.
-        # e.g., blueprint 'community/spotify@v0.1.0' -> tag 'community-spotify-v0.1.0' -> asset 'spotify.zip'
-
+        # --- THIS IS THE FIX ---
+        # The URL and the log message now match the correct, final architecture.
         tag_name = f"{namespace}-{name}-{version}"
         asset_url = f"https://github.com/{BLUEPRINTS_GITHUB_ORG}/{BLUEPRINTS_GITHUB_REPO}/releases/download/{tag_name}/{name}.zip"
-
-        logger.info(
-            "Blueprint not found locally. Downloading from release source archive...",
-            url=asset_url,
-        )
 
         logger.info(
             "Blueprint not found locally. Downloading from release asset...",
             url=asset_url,
         )
+        # --- END FIX ---
 
         try:
             with httpx.stream(
                 "GET", asset_url, follow_redirects=True, timeout=30.0
             ) as response:
                 response.raise_for_status()
-
                 zip_content = io.BytesIO(response.read())
 
             local_path.mkdir(parents=True, exist_ok=True)
 
             with zipfile.ZipFile(zip_content) as zf:
-                # This robustly extracts files, stripping any single top-level directory
-                # from the zip archive, which is a common format for GitHub release assets.
                 for member in zf.infolist():
                     path_parts = Path(member.filename).parts
                     target_filename = (

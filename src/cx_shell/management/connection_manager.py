@@ -2,9 +2,10 @@ import yaml
 from typing import Dict, Optional
 
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
 from rich.table import Table
-
+from prompt_toolkit import prompt
+from prompt_toolkit.shortcuts import confirm
+from prompt_toolkit.completion import WordCompleter
 from ..engine.connector.config import ConnectionResolver, CX_HOME
 
 # Use a single, shared console for all rich output.
@@ -51,33 +52,27 @@ class ConnectionManager:
 
     def create_interactive(self, preselected_blueprint_id: Optional[str] = None):
         """
-        Interactively creates a new connection by first loading a blueprint
-        to determine the required fields.
+        Interactively creates a new connection by loading a blueprint.
         """
         console.print(
             "[bold green]--- Create a New Connection (Interactive) ---[/bold green]"
         )
 
-        blueprint_id = preselected_blueprint_id or Prompt.ask(
-            "Enter the Blueprint ID to use (e.g., system/mssql@v0.1.0)"
+        blueprint_id = preselected_blueprint_id or prompt(
+            "Enter the Blueprint ID to use (e.g., system/mssql@v0.1.0): "
         )
 
-        # --- Blueprint Loading & On-Demand Sync ---
         status_text = (
             f"Loading blueprint [bold magenta]{blueprint_id}[/bold magenta]..."
         )
         with console.status(status_text, spinner="dots"):
             try:
-                # This single, clean call to the public API of the resolver
-                # correctly encapsulates the git sync, file loading, and validation logic.
                 catalog = self.resolver.load_blueprint_by_id(blueprint_id)
                 auth_methods = catalog.supported_auth_methods
-
                 if not auth_methods:
                     raise ValueError(
                         "Blueprint does not define any `supported_auth_methods`."
                     )
-
             except Exception as e:
                 console.print(
                     f"\n[bold red]Error:[/bold red] Could not load blueprint '{blueprint_id}'."
@@ -85,35 +80,41 @@ class ConnectionManager:
                 console.print(f"[dim]Details: {e}[/dim]")
                 return
 
-        # --- Interactive Prompting Driven by Blueprint ---
         chosen_method = auth_methods[0]
         if len(auth_methods) > 1:
             console.print("\n[bold]Select an authentication method:[/bold]")
             choices = {str(i + 1): method for i, method in enumerate(auth_methods)}
             for i, method in choices.items():
                 console.print(f"  [cyan]{i}[/cyan]: {method.display_name}")
-            choice_str = Prompt.ask(
-                "Enter your choice", choices=list(choices.keys()), default="1"
+
+            # Use a WordCompleter for a better selection experience
+            choice_completer = WordCompleter(list(choices.keys()))
+            choice_str = prompt(
+                "Enter your choice (1): ", completer=choice_completer, default="1"
             )
-            chosen_method = choices[choice_str]
+            chosen_method = choices.get(choice_str, auth_methods[0])
 
         console.print(
             f"\nPlease provide the following details for '[yellow]{chosen_method.display_name}[/yellow]':"
         )
-        conn_name = Prompt.ask("Enter a friendly name for this connection")
-        conn_id = Prompt.ask(
-            "Enter a unique ID (alias)", default=conn_name.lower().replace(" ", "-")
+        conn_name = prompt("Enter a friendly name for this connection: ")
+        conn_id = prompt(
+            f"Enter a unique ID (alias) ({conn_name.lower().replace(' ', '-')}) : ",
+            default=conn_name.lower().replace(" ", "-"),
         )
 
         details, secrets = {}, {}
         for field in chosen_method.fields:
-            value = Prompt.ask(field.label, password=field.is_password)
+            # --- THIS IS THE KEY CHANGE (PROMPTING) ---
+            # Use prompt_toolkit's `prompt` function with `is_password=True`
+            # which correctly renders asterisks for feedback.
+            value = prompt(f"{field.label}: ", is_password=field.is_password)
+            # --- END CHANGE ---
             if field.type == "secret":
                 secrets[field.name] = value
             else:
                 details[field.name] = value
 
-        # --- File Creation ---
         conn_content = {
             "name": conn_name,
             "id": f"user:{conn_id}",
@@ -130,7 +131,8 @@ class ConnectionManager:
         console.print("\n[bold]Configuration to be saved:[/bold]")
         console.print(yaml.dump(conn_content, sort_keys=False))
 
-        if Confirm.ask("\nDo you want to save this connection?", default=True):
+        # Use prompt_toolkit's `confirm` function for a y/n prompt
+        if confirm("\nDo you want to save this connection? "):
             conn_file.write_text(yaml.dump(conn_content, sort_keys=False))
             secret_file.write_text(secrets_content)
             console.print(

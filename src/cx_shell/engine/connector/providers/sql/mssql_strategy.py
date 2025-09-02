@@ -33,16 +33,16 @@ class MssqlStrategy(BaseSqlAlchemyStrategy):
         database = config.get("database")
 
         if not all([username, password, server, database]):
-            raise ValueError("Missing required fields for MSSQL connection.")
+            raise ValueError(
+                "Missing required fields (server, database, username, password) for MSSQL connection."
+            )
 
         driver = "ODBC Driver 18 for SQL Server"
 
-        # --- THIS IS THE DEFINITIVE FIX ---
-        # URL-encode the username and password to handle special characters safely.
-        # quote_plus is specifically designed for this purpose.
+        # URL-encode the username and password to handle any special characters safely.
+        # This prevents characters like '@', ':', '/', '$' from breaking the connection string format.
         encoded_username = quote_plus(username)
         encoded_password = quote_plus(password)
-        # --- END FIX ---
 
         # Construct the URL with the now-safe, encoded credentials.
         conn_url = (
@@ -50,7 +50,7 @@ class MssqlStrategy(BaseSqlAlchemyStrategy):
             f"?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
         )
 
-        logger.info(
+        logger.debug(
             "Constructed MSSQL connection URL.", server=server, database=database
         )
         return conn_url

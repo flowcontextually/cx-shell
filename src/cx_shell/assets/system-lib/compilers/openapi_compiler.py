@@ -36,6 +36,7 @@ def log_to_stderr(message: str):
 
 def safe_name(name: str) -> str:
     """Ensures a name is a valid Python identifier by cleaning and suffixing keywords."""
+    # Replace slashes and other invalid characters with underscores
     cleaned_name = re.sub(r"[^0-9a-zA-Z_]", "_", name)
     if cleaned_name in PYTHON_KEYWORDS:
         return f"{cleaned_name}_"

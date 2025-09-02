@@ -2,7 +2,7 @@ import asyncio
 import shlex
 import json
 import ast
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from rich.console import Console
 from rich.syntax import Syntax
@@ -17,6 +17,9 @@ from cx_core_schemas.connector_script import (
     ConnectorScript,
     ConnectorStep,
     RunDeclarativeAction,
+    RunSqlQueryAction,
+    BrowsePathAction,
+    ReadContentAction,
 )
 
 # Use a single, shared console for all rich output in the REPL
@@ -40,6 +43,7 @@ class CommandExecutor:
             "connections": self.execute_list_connections,
             "help": self.execute_help,
         }
+        self.positional_arg_actions = {"query", "browse", "read"}
 
     async def execute(self, command_text: str):
         """The main entry point for parsing and executing any user command."""
@@ -75,7 +79,8 @@ class CommandExecutor:
 
     async def execute_dot_notation(self, command_text: str):
         """
-        Parses and executes a dot-notation command like 'alias.action(key=value)'.
+        Parses and executes a dot-notation command, dispatching to the correct
+        parser based on the action verb.
         """
         try:
             alias, rest = command_text.split(".", 1)
@@ -83,71 +88,137 @@ class CommandExecutor:
             args_str = args_str.rstrip(")")
         except ValueError:
             console.print(
-                "[bold red]Invalid syntax.[/bold red] Expected format: `alias.action(arguments)`"
+                "[bold red]Invalid syntax.[/bold red] Expected format: `alias.action(...)`"
             )
             return
 
         if alias not in self.state.connections:
             console.print(
-                f"[bold red]Error:[/bold red] Unknown connection alias '{alias}'. Use 'connections' to see active aliases."
+                f"[bold red]Error:[/bold red] Unknown connection alias '{alias}'."
             )
             return
 
         connection_source = self.state.connections[alias]
+        step = None
 
-        action_context: Dict[str, Any] = {}
-        if args_str.strip():
+        status_text = f"Executing command on [cyan]{alias}[/cyan]..."
+        with console.status(status_text, spinner="dots") as status:
             try:
-                wrapper_expression = f"f({args_str})"
-                parsed_ast = ast.parse(wrapper_expression, mode="eval")
-                call_node = parsed_ast.body
-                if not isinstance(call_node, ast.Call) or call_node.args:
-                    raise TypeError("Only key=value arguments are supported.")
-                action_context = {
-                    kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords
-                }
-            except (ValueError, SyntaxError, TypeError) as e:
-                console.print(
-                    f"[bold red]Argument Error:[/bold red] Could not parse arguments. {e}"
-                )
-                return
+                # Dispatch based on whether the action is a special positional verb
+                if action_name in self.positional_arg_actions:
+                    arg = args_str.strip().strip("'\"")
+                    status.update(
+                        f"Executing [cyan]{alias}[/cyan].[yellow]{action_name}[/yellow]([magenta]'{arg}'[/magenta])..."
+                    )
 
-        step = ConnectorStep(
-            id=f"interactive_{action_name}",
-            name=f"Interactive {action_name}",
-            connection_source=connection_source,
-            run=RunDeclarativeAction(
-                action="run_declarative_action",
-                template_key=action_name,
-                context=action_context,
-            ),
-        )
-        script = ConnectorScript(name="Interactive Script", steps=[step])
+                    if action_name == "query":
+                        step = ConnectorStep(
+                            id="interactive_query",
+                            name="Interactive Query",
+                            connection_source=connection_source,
+                            run=RunSqlQueryAction(
+                                action="run_sql_query", query=arg, parameters={}
+                            ),
+                        )
+                    elif action_name == "browse":
+                        step = ConnectorStep(
+                            id="interactive_browse",
+                            name="Interactive Browse",
+                            connection_source=connection_source,
+                            run=BrowsePathAction(action="browse_path", path=arg),
+                        )
+                    elif action_name == "read":
+                        step = ConnectorStep(
+                            id="interactive_read",
+                            name="Interactive Read",
+                            connection_source=connection_source,
+                            run=ReadContentAction(action="read_content", path=arg),
+                        )
+                else:
+                    # Fallback to robust keyword argument parsing for all other actions
+                    action_context = self._parse_kwargs(args_str)
+                    if action_context is None:
+                        return
 
-        status = Status(
-            f"Executing [cyan]{alias}[/cyan].[yellow]{action_name}[/yellow]...",
-            spinner="dots",
-        )
-        with status:
-            try:
+                    status.update(
+                        f"Executing [cyan]{alias}[/cyan].[yellow]{action_name}[/yellow]([magenta]{action_context}[/magenta])..."
+                    )
+                    step = ConnectorStep(
+                        id=f"interactive_{action_name}",
+                        name=f"Interactive {action_name}",
+                        connection_source=connection_source,
+                        run=RunDeclarativeAction(
+                            action="run_declarative_action",
+                            template_key=action_name,
+                            context=action_context,
+                        ),
+                    )
+
+                if not step:
+                    console.print(
+                        f"[bold red]Error:[/bold red] Could not construct an action for '{action_name}'."
+                    )
+                    return
+
+                script = ConnectorScript(name="Interactive Script", steps=[step])
                 results = await self.service.engine.run_script_model(script)
+
                 status.stop()
-                output = results.get(
-                    step.name, {"error": "No result returned from step."}
-                )
+
+                output = results.get(step.name, {"error": "No result returned."})
                 if "error" in output:
                     console.print(
                         f"[bold red]Runtime Error:[/bold red] {output['error']}"
                     )
                     return
-                formatted_json = json.dumps(output, indent=2, default=str)
+
+                final_output = output
+                if (
+                    action_name == "query"
+                    and isinstance(output, dict)
+                    and "data" in output
+                ):
+                    final_output = output["data"]
+                elif (
+                    action_name == "read"
+                    and isinstance(output, dict)
+                    and "content" in output
+                ):
+                    console.print(output["content"])
+                    return
+
+                formatted_json = json.dumps(final_output, indent=2, default=str)
                 syntax = Syntax(
                     formatted_json, "json", theme="monokai", line_numbers=True
                 )
                 console.print(syntax)
+
             except Exception as e:
                 status.stop()
                 console.print(f"[bold red]Engine Error:[/bold red] {e}")
+
+    def _parse_kwargs(self, args_str: str) -> Optional[Dict[str, Any]]:
+        """Helper function to parse keyword arguments using ast."""
+        action_context: Dict[str, Any] = {}
+        if args_str.strip():
+            try:
+                # Use `ast.parse` to handle a full function call, but only extract keywords
+                wrapper_expression = f"f({args_str})"
+                parsed_ast = ast.parse(wrapper_expression, mode="eval")
+                call_node = parsed_ast.body
+                if not isinstance(call_node, ast.Call) or call_node.args:
+                    raise TypeError(
+                        "Only key=value arguments are supported for this action."
+                    )
+                action_context = {
+                    kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords
+                }
+            except (ValueError, SyntaxError, TypeError) as e:
+                console.print(
+                    f"[bold red]Argument Error:[/bold red] Could not parse arguments '{args_str}'. Error: {e}"
+                )
+                return None
+        return action_context
 
     # --- Built-in Shell Commands ---
 
@@ -232,7 +303,13 @@ class CommandExecutor:
         console.print()
 
     async def execute_connect(self, args: List[str]):
-        """Executes the 'connect' command."""
+        """
+        Executes the 'connect' command in the interactive shell.
+
+        It parses the user's input, calls the ConnectorService to test the
+        connection, and provides clear, user-friendly feedback, including a
+        spinner during the connection attempt.
+        """
         if len(args) < 3 or args[1].lower() != "--as":
             console.print(
                 "[bold red]Invalid syntax.[/bold red] Use: `connect <connection_source> --as <alias>`"
@@ -242,29 +319,21 @@ class CommandExecutor:
         source = args[0]
         alias = args[2]
 
+        # Use a status spinner for improved user experience during the network call.
         status = Status(
             f"Attempting to connect to '[yellow]{source}[/yellow]'...", spinner="dots"
         )
-        result = None
         with status:
-            try:
-                result = await self.service.test_connection(source)
-            except Exception as e:
-                status.stop()
-                console.print(
-                    f"[bold red]❌ Connection failed:[/bold red] An unexpected error occurred: {e}"
-                )
-                return
+            # The `test_connection` service is guaranteed to not raise an exception.
+            result = await self.service.test_connection(source)
 
-        if result and result.get("status") == "success":
+        # Check the status from the returned dictionary.
+        if result.get("status") == "success":
             self.state.connections[alias] = source
             console.print(
                 f"[bold green]✅ Connection successful.[/bold green] Alias '[cyan]{alias}[/cyan]' is now active."
             )
         else:
-            error_message = (
-                result.get("message", "Unknown error")
-                if result
-                else "Test returned no result."
-            )
+            # Display the clean error message provided by the service.
+            error_message = result.get("message", "An unknown error occurred.")
             console.print(f"[bold red]❌ Connection failed:[/bold red] {error_message}")
