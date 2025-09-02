@@ -1,7 +1,5 @@
 name: Build and Release CX Shell
 
-# This workflow is triggered ONLY when a new tag is pushed.
-# Tags should follow semantic versioning, e.g., v0.1.0, v0.2.1, etc.
 on:
   push:
     tags:
@@ -10,7 +8,6 @@ on:
 jobs:
   # ====================================================================
   # JOB 1: Run Tests (The Gatekeeper)
-  # This job ensures that no broken code is ever released.
   # ====================================================================
   test:
     name: Run Unit & Integration Tests
@@ -27,6 +24,10 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Create and activate virtual environment
+        run: |
+          uv venv
+          source .venv/bin/activate
       - name: Install dependencies
         run: uv pip install -e .[all]
 
@@ -35,11 +36,10 @@ jobs:
 
   # ====================================================================
   # JOB 2: Build Executables for All Platforms
-  # This job runs in parallel for each OS after the tests have passed.
   # ====================================================================
   build:
     name: Build Executable on ${{ matrix.os }}
-    needs: test # This job depends on the 'test' job succeeding
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -54,10 +54,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install uv and build dependencies
+      - name: Install uv
+        run: pip install uv
+
+      # Each job is a clean machine, so we must create the venv here too.
+      - name: Create and activate virtual environment
+        # The activation command is different on Windows
+        shell: bash
         run: |
-          pip install uv
-          uv pip install -e .[all]
+          uv venv
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
+      - name: Install dependencies and build tools
+        run: uv pip install -e .[all]
 
       - name: Build the executable with PyInstaller
         run: pyinstaller cx.spec
@@ -66,14 +78,12 @@ jobs:
         id: prepare_artifact
         shell: bash
         run: |
-          # The release tag (e.g., "v0.1.0") is available in github.ref_name
           VERSION=${{ github.ref_name }}
           OS_NAME=$(echo ${{ runner.os }} | tr '[:upper:]' '[:lower:]')
 
           if [ "${{ runner.os }}" == "Windows" ]; then
             EXECUTABLE_PATH="dist/cx.exe"
             ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-amd64.zip"
-            # Use 7z on Windows runners for creating zip files
             7z a $ARCHIVE_NAME $EXECUTABLE_PATH
             echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
             echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
@@ -93,14 +103,13 @@ jobs:
 
   # ====================================================================
   # JOB 3: Create the GitHub Release and Upload Assets
-  # This job runs only after all builds have successfully completed.
   # ====================================================================
   release:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create the release and upload assets
+      contents: write
     steps:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
@@ -110,6 +119,4 @@ jobs:
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          # This will automatically use the tag name and commit message for the release notes
-          # You can edit them later.
           files: release-assets/**/*
