@@ -2,6 +2,7 @@ import asyncio
 import shutil
 from pathlib import Path
 import sys
+from typing import List, Optional
 import structlog
 import logging
 
@@ -13,6 +14,9 @@ from cx_shell.engine.connector.cli import app as connector_app
 from cx_shell.engine.transformer.cli import app as transformer_app
 from cx_shell.engine.connector.service import ConnectorService
 from cx_shell.interactive.main import start_repl
+from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
+from cx_shell.management.connection_manager import ConnectionManager
+
 # from cx_shell.utils import get_asset_path # Assuming you create this file
 # We do not need the utils here, so the import can be removed if not used elsewhere
 # from .utils import get_asset_path
@@ -51,9 +55,9 @@ def setup_logging(verbose: bool):
             root_logger.removeHandler(handler)
 
 
-# --- Centralized Path Constants ---
-CX_HOME = Path.home() / ".cx"
-DEFAULT_BLUEPRINTS_PATH = CX_HOME / "blueprints"
+connection_app = typer.Typer(
+    name="connection", help="Manage your local connections.", no_args_is_help=True
+)
 
 
 # --- Main Application Definition ---
@@ -98,6 +102,8 @@ app.add_typer(
     help="Run Transformation workflows to clean, shape, and format data.",
 )
 
+app.add_typer(connection_app, name="connection")
+
 
 # --- Top-Level Commands ---
 
@@ -112,18 +118,15 @@ def init():
     """
     console = Console()
 
-    # --- THIS IS THE FIX ---
-    # The closing tag must match the opening tag exactly.
     console.print(
         "[bold green]Initializing Flow Contextually environment...[/bold green]"
     )
-    # --- END FIX ---
 
     connections_dir = CX_HOME / "connections"
     secrets_dir = CX_HOME / "secrets"
-    user_blueprints_dir = DEFAULT_BLUEPRINTS_PATH / "user"
+    user_blueprints_dir = BLUEPRINTS_BASE_PATH / "user"
     sample_blueprint_target_dir = (
-        DEFAULT_BLUEPRINTS_PATH / "community" / "petstore" / "v2.0"
+        BLUEPRINTS_BASE_PATH / "community" / "petstore" / "v2.0"
     )
 
     dirs_to_create = [
@@ -226,10 +229,10 @@ def compile(
         ..., help="The path or URL to the OpenAPI/Swagger specification file."
     ),
     output_dir: Path = typer.Option(
-        DEFAULT_BLUEPRINTS_PATH,
+        BLUEPRINTS_BASE_PATH,
         "--output",
         "-o",
-        help=f"The root directory to write the blueprint to. [default: {DEFAULT_BLUEPRINTS_PATH}]",
+        help=f"The root directory to write the blueprint to. [default: {BLUEPRINTS_BASE_PATH}]",
         file_okay=False,
         dir_okay=True,
         writable=True,
@@ -295,4 +298,73 @@ def compile(
                 "\n--- [bold red]❌ Compilation Command Failed[/bold red] ---"
             )
             console.print(f"[red]An unexpected error occurred:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@connection_app.command("list")
+def connection_list():
+    """Lists all locally configured connections."""
+    manager = ConnectionManager()
+    manager.list_connections()
+
+
+@connection_app.command("create")
+def connection_create(
+    # The blueprint is now a standard option that can guide interactive mode.
+    blueprint: Optional[str] = typer.Option(
+        None, "--blueprint", "-b", help="Pre-select the blueprint ID to use."
+    ),
+    name: Optional[str] = typer.Option(
+        None, "--name", help="Connection name (for non-interactive mode)."
+    ),
+    id: Optional[str] = typer.Option(
+        None, "--id", help="Connection ID/alias (for non-interactive mode)."
+    ),
+    detail: Optional[List[str]] = typer.Option(
+        None,
+        "--detail",
+        help="A non-sensitive key=value pair. e.g., 'server=localhost'",
+    ),
+    secret: Optional[List[str]] = typer.Option(
+        None, "--secret", help="A SENSITIVE key=value pair. e.g., 'password=123'"
+    ),
+):
+    """
+    Creates a new connection configuration.
+
+    - Run without flags for a fully guided setup.
+    - Run with `--blueprint` to start a guided setup for a specific blueprint.
+    - Provide `--name`, `--id`, and `--blueprint` for non-interactive creation.
+    """
+    console = Console()
+    manager = ConnectionManager()
+
+    # Determine if we are in fully non-interactive (scriptable) mode.
+    is_fully_non_interactive = all([name, id, blueprint])
+
+    try:
+        if is_fully_non_interactive:
+            # --- Non-Interactive Mode ---
+            details_dict = dict(item.split("=", 1) for item in detail) if detail else {}
+            secrets_dict = dict(item.split("=", 1) for item in secret) if secret else {}
+            manager.create_non_interactive(
+                name=name,
+                id=id,
+                blueprint_id=blueprint,
+                details=details_dict,
+                secrets=secrets_dict,
+            )
+        else:
+            # --- Interactive / Semi-Interactive Mode ---
+            if detail or secret:
+                console.print(
+                    "[bold red]Error:[/bold red] --detail and --secret flags can only be used in non-interactive mode (when --name, --id, and --blueprint are all provided)."
+                )
+                raise typer.Exit(code=1)
+
+            # Pass the pre-selected blueprint ID if the user provided it.
+            manager.create_interactive(preselected_blueprint_id=blueprint)
+
+    except Exception as e:
+        console.print(f"\n[bold red]An unexpected error occurred:[/bold red] {e}")
         raise typer.Exit(code=1)
