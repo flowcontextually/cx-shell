@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -86,11 +87,8 @@ class ConnectionResolver:
             if "id" not in raw_data:
                 raw_data["id"] = f"user:{conn_file.stem.replace('.conn', '')}"
 
-            # First, load the connection model. Pydantic will automatically
-            # parse the nested 'catalog' dictionary from the file if it exists.
             connection_model = Connection(**raw_data)
 
-            # Now, check if this connection uses a blueprint that needs to be loaded.
             blueprint_match = re.match(
                 r"^(?P<namespace>[\w-]+)/(?P<name>[\w-]+)@(?P<version>[\w\.-]+)$",
                 connection_model.api_catalog_id or "",
@@ -102,12 +100,11 @@ class ConnectionResolver:
                     catalog_id=connection_model.api_catalog_id,
                 )
                 try:
-                    blueprint_data = self._load_blueprint(blueprint_match)
+                    blueprint_data = self._load_blueprint_package(blueprint_match)
                     blueprint_catalog = ApiCatalog(**blueprint_data)
-                    # Overwrite the connection's catalog with the data from the blueprint file.
                     connection_model.catalog = blueprint_catalog
                     log.info(
-                        "Successfully loaded and merged blueprint.",
+                        "Successfully loaded and merged blueprint package.",
                         blueprint=connection_model.api_catalog_id,
                     )
                 except (FileNotFoundError, ValidationError) as e:
@@ -138,29 +135,55 @@ class ConnectionResolver:
 
         return connection_model, secrets
 
-    def _load_blueprint(self, blueprint_match: re.Match) -> Dict[str, Any]:
+    def _load_blueprint_package(self, blueprint_match: re.Match) -> Dict[str, Any]:
         """
-        Constructs the path and loads the `blueprint.cx.yaml` file from a regex match.
+        Loads all artifacts from a blueprint package directory (blueprint.cx.yaml,
+        source_spec.json, and the path to schemas.py).
+
+        Args:
+            blueprint_match: A regex match object containing the namespace, name, and version.
+
+        Returns:
+            A dictionary containing the contents of the entire blueprint package,
+            ready to be validated by the ApiCatalog model.
         """
         parts = blueprint_match.groupdict()
-        blueprint_path = (
-            BLUEPRINTS_BASE_PATH
-            / parts["namespace"]
-            / parts["name"]
-            / parts["version"]
-            / "blueprint.cx.yaml"
+        blueprint_dir = (
+            BLUEPRINTS_BASE_PATH / parts["namespace"] / parts["name"] / parts["version"]
         )
 
-        # --- THIS IS THE FIX ---
-        # Use the module-level `logger` object, not an undefined `log` variable.
-        logger.debug("Attempting to load blueprint file.", path=str(blueprint_path))
-        # --- END FIX ---
+        blueprint_path = blueprint_dir / "blueprint.cx.yaml"
+        source_spec_path = blueprint_dir / "source_spec.json"
+        schemas_py_path = blueprint_dir / "schemas.py"
+
+        logger.debug("Attempting to load blueprint package.", path=str(blueprint_dir))
 
         if not blueprint_path.is_file():
-            raise FileNotFoundError(f"Blueprint file not found at: {blueprint_path}")
+            raise FileNotFoundError(
+                f"Blueprint file 'blueprint.cx.yaml' not found at: {blueprint_dir}"
+            )
 
         with open(blueprint_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            blueprint_data = yaml.safe_load(f)
+
+        if source_spec_path.is_file():
+            with open(source_spec_path, "r", encoding="utf-8") as f:
+                blueprint_data["source_spec"] = json.load(f)
+        else:
+            logger.warning(
+                "source_spec.json not found for blueprint; parameter validation will be disabled.",
+                path=str(blueprint_dir),
+            )
+
+        if schemas_py_path.is_file():
+            blueprint_data["schemas_module_path"] = str(schemas_py_path)
+        else:
+            logger.warning(
+                "schemas.py not found for blueprint; parameter validation will be disabled.",
+                path=str(blueprint_dir),
+            )
+
+        return blueprint_data
 
     async def _resolve_from_db(self, connection_id: str):
         """Handles fetching from the live platform (DB + Vault)."""

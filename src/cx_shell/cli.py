@@ -1,6 +1,9 @@
 import asyncio
 import shutil
 from pathlib import Path
+import sys
+import structlog
+import logging
 
 import typer
 from rich.console import Console
@@ -10,11 +13,44 @@ from .engine.connector.cli import app as connector_app
 from .engine.transformer.cli import app as transformer_app
 from .engine.connector.service import ConnectorService
 from .interactive.main import start_repl
-from .utils import get_asset_path
+# We do not need the utils here, so the import can be removed if not used elsewhere
+# from .utils import get_asset_path
+
+
+def setup_logging(verbose: bool):
+    """
+    Configures structlog for the entire application.
+    - Default level: INFO (clean user output)
+    - Verbose level: DEBUG (for power users)
+    - All logs are routed to stderr to keep stdout clean for piping.
+    """
+    log_level = logging.DEBUG if verbose else logging.INFO
+
+    # This is the definitive structlog configuration for a CLI tool
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    # Get the root logger and configure its handler
+    root_logger = logging.getLogger()
+    handler = logging.StreamHandler(sys.stderr)
+    # We don't need a formatter because ConsoleRenderer does it all
+    root_logger.addHandler(handler)
+    root_logger.setLevel(log_level)
+    # Clear any other handlers that might have been added by libraries
+    for handler in root_logger.handlers[:]:
+        if handler.stream != sys.stderr:
+            root_logger.removeHandler(handler)
 
 
 # --- Centralized Path Constants ---
-# This is the single source of truth for the application's home directory.
 CX_HOME = Path.home() / ".cx"
 DEFAULT_BLUEPRINTS_PATH = CX_HOME / "blueprints"
 
@@ -33,12 +69,17 @@ app = typer.Typer(
 )
 
 
-@app.callback()
-def main_callback(ctx: typer.Context):
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable verbose DEBUG logging."
+    ),
+):
     """
-    The main callback for the cx command. If no subcommand is invoked,
-    it starts the interactive REPL.
+    The main callback for the cx command. Sets up logging and starts the REPL if no subcommand is invoked.
     """
+    setup_logging(verbose)
     if ctx.invoked_subcommand is None:
         start_repl()
 
@@ -69,9 +110,14 @@ def init():
     them with a sample project to get you started.
     """
     console = Console()
-    console.print("[bold green]Initializing Flow Contextually environment...[/bold]")
 
-    # Define all necessary paths relative to the central CX_HOME
+    # --- THIS IS THE FIX ---
+    # The closing tag must match the opening tag exactly.
+    console.print(
+        "[bold green]Initializing Flow Contextually environment...[/bold green]"
+    )
+    # --- END FIX ---
+
     connections_dir = CX_HOME / "connections"
     secrets_dir = CX_HOME / "secrets"
     user_blueprints_dir = DEFAULT_BLUEPRINTS_PATH / "user"
@@ -90,7 +136,6 @@ def init():
         d.mkdir(parents=True, exist_ok=True)
         console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
 
-    # --- Define File Contents as multi-line strings for clarity ---
     fs_generic_conn = """
 name: "Local Filesystem (Generic Root)"
 id: "user:fs_generic"
@@ -111,9 +156,34 @@ api_catalog_id: "community/petstore@v2.0"
 auth_method_type: "none"
 """
 
+    smart_fetcher_conn = """
+name: "System Smart Fetcher"
+id: "user:system_smart_fetcher"
+api_catalog_id: "catalog:internal-fetcher"
+auth_method_type: "none"
+catalog:
+  id: "catalog:internal-fetcher"
+  name: "Smart Fetcher"
+  connector_provider_key: "internal-smart_fetcher"
+"""
+
+    python_sandbox_conn = """
+name: "System Python Sandbox"
+id: "user:system_python_sandbox"
+api_catalog_id: "catalog:internal-python"
+auth_method_type: "none"
+details: {}
+catalog:
+  id: "catalog:internal-python"
+  name: "Python Sandbox Runtime"
+  connector_provider_key: "python-sandboxed"
+"""
+
     files_to_write = {
         connections_dir / "fs_generic.conn.yaml": fs_generic_conn,
         connections_dir / "petstore.conn.yaml": petstore_conn,
+        connections_dir / "system_smart_fetcher.conn.yaml": smart_fetcher_conn,
+        connections_dir / "system_python_sandbox.conn.yaml": python_sandbox_conn,
     }
 
     for path, content in files_to_write.items():
@@ -123,14 +193,13 @@ auth_method_type: "none"
         else:
             console.print(f"☑️  File already exists, skipping: [dim]{path}[/dim]")
 
-    # --- Copy the bundled petstore blueprint from our assets ---
     try:
-        # This helper function robustly finds the assets directory, whether
-        # running from source or from a PyInstaller bundle.
-        petstore_blueprint_source = get_asset_path("blueprints/community/petstore/v2.0")
+        source_assets_dir = Path(__file__).parent / "assets"
+        petstore_blueprint_source = (
+            source_assets_dir / "blueprints" / "community" / "petstore" / "v2.0"
+        )
 
         if petstore_blueprint_source.is_dir():
-            # Copy all files from the source to the target directory.
             for file_path in petstore_blueprint_source.glob("*"):
                 shutil.copy(file_path, sample_blueprint_target_dir)
             console.print(
@@ -156,7 +225,7 @@ def compile(
         ..., help="The path or URL to the OpenAPI/Swagger specification file."
     ),
     output_dir: Path = typer.Option(
-        DEFAULT_BLUEPRINTS_PATH,  # Use our centralized, user-friendly default
+        DEFAULT_BLUEPRINTS_PATH,
         "--output",
         "-o",
         help=f"The root directory to write the blueprint to. [default: {DEFAULT_BLUEPRINTS_PATH}]",
@@ -172,7 +241,7 @@ def compile(
         "v1.0.0", "--version", help="The version for this blueprint package."
     ),
     namespace: str = typer.Option(
-        "user",  # Default to the user's personal namespace for safety
+        "user",
         "--namespace",
         help="The target namespace (user, community, organization, system).",
     ),
@@ -194,7 +263,9 @@ def compile(
         "output_dir": str(full_output_dir),
     }
 
-    compile_script_path = get_asset_path("system-tasks/compile.connector.yaml")
+    compile_script_path = (
+        Path(__file__).parent / "assets/system-tasks/compile.connector.yaml"
+    )
 
     try:
         service = ConnectorService()

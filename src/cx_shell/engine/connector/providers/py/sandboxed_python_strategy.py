@@ -8,7 +8,7 @@ from typing import Any, Dict, List, TYPE_CHECKING
 import structlog
 
 from ..base import BaseConnectorStrategy
-from ....utils import get_asset_path
+from .....utils import get_asset_path
 from cx_core_schemas.connection import Connection
 
 if TYPE_CHECKING:

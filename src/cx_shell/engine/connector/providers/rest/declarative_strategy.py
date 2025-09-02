@@ -9,8 +9,6 @@ from typing import Any, Dict, List, TYPE_CHECKING
 import httpx
 import structlog
 from jinja2 import Environment, TemplateError
-from rich.console import Console
-from rich.syntax import Syntax
 
 
 # --- Conditional Imports for Type Hinting ---
@@ -477,10 +475,13 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         """
         Executes a generic, templated action defined in the ApiCatalog blueprint.
 
-        This method is the runtime engine for blueprint actions. It looks up the
-        action by its key, renders any templates for the URL path and body,
-        and makes the appropriate HTTP request.
+        This method is the runtime engine for blueprint actions. It performs a
+        "pre-flight check" by validating user parameters against a Pydantic model
+        before rendering templates and making the final HTTP request.
         """
+        import importlib.util
+        from pydantic import ValidationError
+
         template_key = action_params.get("template_key")
         log = logger.bind(connection_id=connection.id, template_key=template_key)
 
@@ -493,83 +494,90 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         template_config = action_templates.get(template_key)
         if not template_config:
             raise ValueError(
-                f"Template key '{template_key}' not found in ApiCatalog blueprint."
+                f"Action '{template_key}' not found in blueprint's action_templates."
             )
 
-        api_endpoint_template = template_config.get("api_endpoint")
-        http_method = template_config.get("http_method", "GET").upper()
-
-        if not api_endpoint_template:
-            raise ValueError("Action template is missing required key 'api_endpoint'.")
-
-        # The full render context makes secrets, connection details, and action-specific
-        # arguments available to the Jinja2 templates.
-        # We merge the action's context directly into the top level, so that a
-        # template like `/pets/{petId}` can be rendered from an argument `petId=1`.
         action_context = action_params.get("context", {})
+        validated_params = action_context
+
+        # --- Pydantic "Pre-Flight Check" Validation Layer ---
+        if "parameters_model" in template_config:
+            model_path_str = template_config["parameters_model"]
+            schemas_py_file = connection.catalog.schemas_module_path
+
+            if schemas_py_file and model_path_str.startswith("schemas."):
+                class_name = model_path_str.split(".", 1)[1]
+                try:
+                    # Use importlib to robustly load the schemas.py file as a module
+                    # The module name 'schemas' is arbitrary but conventional.
+                    spec = importlib.util.spec_from_file_location(
+                        "schemas", schemas_py_file
+                    )
+                    schemas_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(schemas_module)
+
+                    ParamModel = getattr(schemas_module, class_name)
+
+                    # THE VALIDATION STEP: This is where Pydantic does its magic.
+                    # If arguments are missing or have wrong types, this will raise a ValidationError.
+                    validated_params_obj = ParamModel(**action_context)
+                    validated_params = validated_params_obj.model_dump(by_alias=True)
+                    log.info(
+                        "Successfully validated user parameters against Pydantic model.",
+                        model=class_name,
+                    )
+
+                except FileNotFoundError:
+                    log.error(
+                        "schemas.py file not found, skipping validation.",
+                        path=schemas_py_file,
+                    )
+                except (AttributeError, ImportError):
+                    log.error(
+                        f"Could not find or load model '{class_name}' from '{schemas_py_file}'. Skipping validation."
+                    )
+                except ValidationError as e:
+                    # Re-raise Pydantic's detailed error directly to the user. This is the goal.
+                    raise e
+
+        # --- Templating and Execution ---
         render_context = {
             "details": connection.details,
             "secrets": secrets,
             "script_input": script_input,
-            **action_context,  # Unpack the action arguments into the top level
+            **validated_params,  # Use the validated and aliased parameters
         }
-        # Render the API endpoint. This is crucial for substituting path parameters
-        # like `/pets/{action.petId}`.
-        # Render the API endpoint. This is crucial for substituting path parameters.
+
+        api_endpoint_template = template_config.get("api_endpoint")
+        if not api_endpoint_template:
+            raise ValueError("Action template is missing required key 'api_endpoint'.")
+
         api_endpoint = self._render_template(api_endpoint_template, render_context)
+        http_method = template_config.get("http_method", "GET").upper()
         log.info(
             "Executing declarative action.", endpoint=api_endpoint, method=http_method
         )
 
         async with self.get_client(connection, secrets) as client:
             request_kwargs = {}
-            payload = None
-
-            # Only process a request body if the method is one that typically has one.
             if http_method in ["POST", "PUT", "PATCH"]:
-                payload_template_str = template_config.get("payload_template")
-                if payload_template_str:
-                    # Special functions for reading local files can be injected here.
-                    # self.jinja_env.globals["read_attachment"] = read_attachment
-
+                if "payload_constructor" in template_config:
+                    # In a future version, we would perform Pydantic validation on the payload here too.
+                    # For now, we assume the context is correct for the body.
+                    payload_template = {
+                        "_constructor": template_config["payload_constructor"][
+                            "_constructor"
+                        ],
+                        **validated_params,
+                    }
                     rendered_payload_str = self._render_template(
-                        payload_template_str, render_context
+                        json.dumps(payload_template), render_context
                     )
+                    request_kwargs["json"] = json.loads(rendered_payload_str)
 
-                    if debug_mode:
-                        console = Console(stderr=True)
-                        console.print(
-                            "\n--- [bold yellow]DEBUG: Rendered Payload[/bold yellow] ---"
-                        )
-                        syntax = Syntax(
-                            rendered_payload_str,
-                            "json",
-                            theme="default",
-                            line_numbers=True,
-                        )
-                        console.print(syntax)
-                        console.print("--- [bold yellow]END DEBUG[/bold yellow] ---\n")
-
-                    payload = json.loads(rendered_payload_str)
-
-                    content_type = template_config.get("content_type", "json").lower()
-                    if content_type == "json":
-                        request_kwargs["json"] = payload
-                    elif content_type == "form":
-                        request_kwargs["data"] = payload
-                else:
-                    # It's valid for a POST to have no body, so we just log a debug message.
-                    log.debug(
-                        "No payload_template found for method, sending request with empty body.",
-                        method=http_method,
-                    )
-
-            # Use the flexible `client.request` to handle all HTTP methods.
             response = await client.request(http_method, api_endpoint, **request_kwargs)
-
             response.raise_for_status()
 
-            # Gracefully handle responses that have no content (e.g., HTTP 204 No Content).
             return (
                 response.json()
                 if response.content
