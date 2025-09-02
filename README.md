@@ -78,11 +78,11 @@ cx> api.getPetById(petId=1)
 
 ## 📚 Documentation
 
-For full documentation, tutorials, and architectural deep dives, please visit our **official documentation site**.
+For full documentation, tutorials, and architectural deep dives, please visit our [**official documentation site**](https://flowcontextually.github.io/docs/).
 
 ## 🤝 Contributing
 
-We welcome contributions of all kinds! The most valuable way to contribute is by adding new integrations to our public **Blueprint Registry**.
+We welcome contributions of all kinds! The most valuable way to contribute is by adding new integrations to our public [**Blueprint Registry**](https://github.com/flowcontextually/blueprints).
 
 ### Setting up a Development Environment
 
