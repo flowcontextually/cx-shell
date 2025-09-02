@@ -6,9 +6,6 @@ on:
       - "v*"
 
 jobs:
-  # ====================================================================
-  # JOB 1: Run Tests (The Gatekeeper)
-  # ====================================================================
   test:
     name: Run Unit & Integration Tests
     runs-on: ubuntu-latest
@@ -24,19 +21,15 @@ jobs:
       - name: Install uv
         run: pip install uv
 
-      - name: Create and activate virtual environment
-        run: |
-          uv venv
-          source .venv/bin/activate
+      - name: Create virtual environment
+        run: uv venv
+
       - name: Install dependencies
         run: uv pip install -e .[all]
 
       - name: Run Pytest
-        run: pytest
+        run: uv run pytest
 
-  # ====================================================================
-  # JOB 2: Build Executables for All Platforms
-  # ====================================================================
   build:
     name: Build Executable on ${{ matrix.os }}
     needs: test
@@ -57,22 +50,14 @@ jobs:
       - name: Install uv
         run: pip install uv
 
-      # Each job is a clean machine, so we must create the venv here too.
-      - name: Create and activate virtual environment
-        # The activation command is different on Windows
-        shell: bash
-        run: |
-          uv venv
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
+      - name: Create virtual environment
+        run: uv venv
+
       - name: Install dependencies and build tools
         run: uv pip install -e .[all]
 
       - name: Build the executable with PyInstaller
-        run: pyinstaller cx.spec
+        run: uv run pyinstaller cx.spec
 
       - name: Prepare artifact name and path
         id: prepare_artifact
@@ -101,9 +86,6 @@ jobs:
           name: ${{ env.ASSET_NAME }}
           path: ${{ env.ASSET_PATH }}
 
-  # ====================================================================
-  # JOB 3: Create the GitHub Release and Upload Assets
-  # ====================================================================
   release:
     name: Create GitHub Release
     needs: build
