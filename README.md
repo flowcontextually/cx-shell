@@ -16,33 +16,42 @@ Get your first "win" in under five minutes. This tutorial will guide you through
 
 ### 1. Installation
 
-Download the latest pre-compiled binary for your operating system from our [**GitHub Releases page**](https://github.com/flowcontextually/cx-shell/releases).
+Download and install the latest pre-compiled binary for your operating system from our [**GitHub Releases page**](https://github.com/flowcontextually/cx-shell/releases).
 
-**Linux & macOS**
+**Linux**
 
 ```bash
-# Replace v0.1.0 with the latest version number
-VERSION="v0.1.0"
-# For Intel Macs/Linux -> ARCH="x86_64"
-# For Apple Silicon Macs -> ARCH="arm64"
-ARCH="x86_64"
-
-curl -L -o cx.tar.gz "https://github.com/flowcontextually/cx-shell/releases/download/${VERSION}/cx-${VERSION}-linux-${ARCH}.tar.gz"
-tar -xzf cx.tar.gz
+# This script downloads the latest Linux binary, extracts it, and moves it to your path.
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.0/cx-v0.1.0-linux-x86_64.tar.gz | tar -xz
 sudo mv cx /usr/local/bin/
 cx --version
 ```
 
-**Windows (using PowerShell)**
+**macOS (Intel)**
+
+```bash
+# This script downloads the latest macOS (Intel) binary, extracts it, and moves it to your path.
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.0/cx-v0.1.0-macos-x86_64.tar.gz | tar -xz
+sudo mv cx /usr/local/bin/
+cx --version
+```
+
+**macOS (Apple Silicon)**
+
+> **Warning:** A native Apple Silicon build is not yet available. You can run the Intel version via Rosetta 2 using the macOS (Intel) instructions.
+
+**Windows (PowerShell)**
 
 ```powershell
-# Replace v0.1.0 with the latest version number
-$version = "v0.1.0"
-$output = "cx-setup.exe"
-$url = "https://github.com/flowcontextually/cx-shell/releases/download/${version}/cx-setup-${version}.exe"
-
+# This script downloads the latest Windows binary and unzips it.
+$url = "https://github.com/flowcontextually/cx-shell/releases/download/v0.1.0/cx-v0.1.0-windows-amd64.zip"
+$output = "cx.zip"
 Invoke-WebRequest -Uri $url -OutFile $output
-./$output
+Expand-Archive -Path $output -DestinationPath .
+
+# You should now have `cx.exe` in the current directory.
+# For system-wide access, move `cx.exe` to a directory in your system's PATH.
+./cx.exe --version
 ```
 
 ### 2. Initialize Your Environment
