@@ -1,4 +1,4 @@
-# The Contextual Shell (`cx`) by Flow Contextually
+# The Contextual Shell (`cx`) by Contextually
 
 <!-- <p align="center"> -->
   <!-- TODO: Record a GIF of the "5-Minute Tutorial" steps and replace this placeholder -->
