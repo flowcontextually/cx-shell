@@ -1,0 +1,79 @@
+id: blueprint:swagger-petstore
+name: Swagger Petstore
+version: 1.0.7
+connector_provider_key: rest-declarative
+auth_config:
+  type: none
+browse_config:
+  base_url_template: https://petstore.swagger.io/v2
+  action_templates:
+    uploadFile:
+      http_method: POST
+      api_endpoint: /pet/{{ petId }}/uploadImage
+    addPet:
+      http_method: POST
+      api_endpoint: /pet
+      payload_constructor:
+        _constructor: schemas.Pet
+    updatePet:
+      http_method: PUT
+      api_endpoint: /pet
+      payload_constructor:
+        _constructor: schemas.Pet
+    findPetsByStatus:
+      http_method: GET
+      api_endpoint: /pet/findByStatus
+    findPetsByTags:
+      http_method: GET
+      api_endpoint: /pet/findByTags
+    getPetById:
+      http_method: GET
+      api_endpoint: /pet/{{ petId }}
+    updatePetWithForm:
+      http_method: POST
+      api_endpoint: /pet/{{ petId }}
+    deletePet:
+      http_method: DELETE
+      api_endpoint: /pet/{{ petId }}
+    getInventory:
+      http_method: GET
+      api_endpoint: /store/inventory
+    placeOrder:
+      http_method: POST
+      api_endpoint: /store/order
+      payload_constructor:
+        _constructor: schemas.Order
+    getOrderById:
+      http_method: GET
+      api_endpoint: /store/order/{{ orderId }}
+    deleteOrder:
+      http_method: DELETE
+      api_endpoint: /store/order/{{ orderId }}
+    createUsersWithListInput:
+      http_method: POST
+      api_endpoint: /user/createWithList
+    getUserByName:
+      http_method: GET
+      api_endpoint: /user/{{ username }}
+    updateUser:
+      http_method: PUT
+      api_endpoint: /user/{{ username }}
+      payload_constructor:
+        _constructor: schemas.User
+    deleteUser:
+      http_method: DELETE
+      api_endpoint: /user/{{ username }}
+    loginUser:
+      http_method: GET
+      api_endpoint: /user/login
+    logoutUser:
+      http_method: GET
+      api_endpoint: /user/logout
+    createUsersWithArrayInput:
+      http_method: POST
+      api_endpoint: /user/createWithArray
+    createUser:
+      http_method: POST
+      api_endpoint: /user
+      payload_constructor:
+        _constructor: schemas.User
