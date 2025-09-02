@@ -1,4 +1,4 @@
-from .cli import app
+from cx_shell.cli import app
 
 
 def main():

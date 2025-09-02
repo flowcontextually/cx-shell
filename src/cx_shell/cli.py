@@ -9,10 +9,11 @@ import typer
 from rich.console import Console
 
 # --- Local Application Imports ---
-from .engine.connector.cli import app as connector_app
-from .engine.transformer.cli import app as transformer_app
-from .engine.connector.service import ConnectorService
-from .interactive.main import start_repl
+from cx_shell.engine.connector.cli import app as connector_app
+from cx_shell.engine.transformer.cli import app as transformer_app
+from cx_shell.engine.connector.service import ConnectorService
+from cx_shell.interactive.main import start_repl
+# from cx_shell.utils import get_asset_path # Assuming you create this file
 # We do not need the utils here, so the import can be removed if not used elsewhere
 # from .utils import get_asset_path
 
