@@ -1,4 +1,4 @@
-# The Contextual Shell (`cx`) by Contextually
+# The Contextual Shell (`cx`) by Flow Contextually
 
 <!-- <p align="center"> -->
   <!-- TODO: Record a GIF of the "5-Minute Tutorial" steps and replace this placeholder -->
@@ -17,42 +17,42 @@ Get your first "win" in under five minutes. This tutorial will guide you through
 
 Download and install the latest pre-compiled binary for your operating system from our [**GitHub Releases page**](https://github.com/flowcontextually/cx-shell/releases).
 
-=== "Linux"
+#### Linux
 
-    ```bash
-    # This script downloads the latest Linux binary, extracts it, and moves it to your path.
-    curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-linux-x86_64.tar.gz | tar -xz
-    sudo mv cx /usr/local/bin/
-    cx --version
-    ```
+```bash
+# This script downloads the latest Linux binary, extracts it, and moves it to your path.
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-linux-x86_64.tar.gz | tar -xz
+sudo mv cx /usr/local/bin/
+cx --version
+```
 
-=== "macOS (Intel)"
+#### macOS (Intel)
 
-    ```bash
-    # This script downloads the latest macOS (Intel) binary, extracts it, and moves it to your path.
-    curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-macos-x86_64.tar.gz | tar -xz
-    sudo mv cx /usr/local/bin/
-    cx --version
-    ```
+```bash
+# This script downloads the latest macOS (Intel) binary, extracts it, and moves it to your path.
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-macos-x86_64.tar.gz | tar -xz
+sudo mv cx /usr/local/bin/
+cx --version
+```
 
-=== "macOS (Apple Silicon)"
+#### macOS (Apple Silicon)
 
-    !!! warning "Apple Silicon (M1/M2/M3)"
-        A native Apple Silicon build is not yet available. You can run the Intel version via Rosetta 2 using the macOS (Intel) instructions.
+> **Warning:** Apple Silicon (M1/M2/M3)  
+> A native Apple Silicon build is not yet available. You can run the Intel version via Rosetta 2 using the macOS (Intel) instructions.
 
-=== "Windows (PowerShell)"
+#### Windows (PowerShell)
 
-    ```powershell
-    # This script downloads the latest Windows binary and unzips it.
-    $url = "https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-windows-amd64.zip"
-    $output = "cx.zip"
-    Invoke-WebRequest -Uri $url -OutFile $output
-    Expand-Archive -Path $output -DestinationPath .
+```powershell
+# This script downloads the latest Windows binary and unzips it.
+$url = "https://github.com/flowcontextually/cx-shell/releases/download/v0.1.1/cx-v0.1.1-windows-amd64.zip"
+$output = "cx.zip"
+Invoke-WebRequest -Uri $url -OutFile $output
+Expand-Archive -Path $output -DestinationPath .
 
-    # You should now have `cx.exe` in the current directory.
-    # For system-wide access, move `cx.exe` to a directory in your system's PATH.
-    ./cx.exe --version
-    ```
+# You should now have `cx.exe` in the current directory.
+# For system-wide access, move `cx.exe` to a directory in your system's PATH.
+./cx.exe --version
+```
 
 ### 2. Initialize Your Environment
 
