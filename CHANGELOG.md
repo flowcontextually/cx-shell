@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-09-04
+
+This release introduces the **Application Ecosystem**, a major new feature for packaging, distributing, and managing complete, end-to-end solutions.
+
+### Added
+
+- **Application Management (`cx app`):** A full suite of commands in both the CLI and interactive REPL (`install`, `list`, `uninstall`, `search`, `sync`, `package`) to manage applications.
+- **Public Application Registry:** Users can now discover and install official and community-vetted applications using commands like `cx app search`.
+- **Private Application Support:** `cx app install` supports installing applications directly from a URL to a private Git repository archive.
+- **Automatic Dependency Resolution:** The installer automatically resolves and downloads any required blueprint dependencies declared in an application's manifest.
+- **Interactive Setup Wizard:** Installing an application now launches a guided wizard to help the user configure all necessary connections.
+- **CLI-REPL Parity:** Added `flow list`, `query list`, and `script list` to the main CLI for a consistent experience with the interactive shell.
+
 ## [0.2.1] - 2025-09-04
 
 This is a major bugfix and feature-enhancement release that creates a seamless, robust, and elegant experience for building monolithic flows.
