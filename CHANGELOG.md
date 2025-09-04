@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-09-04
+
+This is a major bugfix and feature-enhancement release that creates a seamless, robust, and elegant experience for building monolithic flows.
+
+### Added
+
+- **Native `run_transform` Action:** Flows (`.flow.yaml`) now have a first-class `run_transform` action, eliminating the need for helper Python scripts to run transformer workflows.
+- **Declarative Payload Engine:** Blueprints now support a powerful `_mapping` block that allows the engine to automatically and declaratively transform simple user context into complex, nested, and validated API payloads using the Pydantic schema as the instruction set.
+
+### Fixed
+
+- **Dynamic Schema Loading:** Completely resolved all `PydanticUndefinedAnnotation` errors (e.g., `name 'Optional' is not defined`) that occurred when dynamically loading blueprint schemas with forward references.
+- **Jinja Native Type Evaluation:** The flow engine now correctly evaluates single-variable Jinja templates (e.g., `{{ my_list }}`) to their native Python type instead of incorrectly casting them to strings.
+- **Path Expansion:** The engine now automatically expands the home directory character (`~`) in all file paths used within flows and blueprints.
+- **Connection-less Steps:** The flow engine now correctly handles steps that do not require a `connection_source` (like `run_transform`), fixing an `AttributeError`.
+
 ## [0.2.0] - 2025-09-03
 
 This is a landmark release, transforming the `cx` shell from a simple command runner into a powerful, stateful, and persistent "Workspace IDE" for interactive data workflows.
