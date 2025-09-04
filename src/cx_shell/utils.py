@@ -2,6 +2,13 @@ import sys
 from pathlib import Path
 
 
+def resolve_path(path_str: str) -> Path:
+    """
+    Expands the user's home directory ('~') and resolves the path.
+    """
+    return Path(path_str).expanduser().resolve()
+
+
 def get_asset_path(relative_path: str) -> Path:
     """
     Gets the absolute path to a bundled asset, working correctly whether

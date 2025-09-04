@@ -3,21 +3,24 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import time
 from typing import Any, Dict, List, TYPE_CHECKING
-
+from pydantic import TypeAdapter, ValidationError
 import httpx
 import structlog
 from jinja2 import Environment, TemplateError
+import importlib.util
 
 
 # --- Conditional Imports for Type Hinting ---
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
     from ...vfs_reader import AbstractVfsReader
+    from cx_core_schemas.api_catalog import ApiCatalog
+
 
 from ...utils import safe_serialize
 from ..base import BaseConnectorStrategy
+from .....utils import resolve_path
 from cx_core_schemas.vfs import VfsFileContentResponse, VfsNodeMetadata
 
 
@@ -65,32 +68,82 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         self.jinja_env.filters["sha256_hex"] = sha256_hex_filter
         self.jinja_env.filters["b64decode"] = b64decode_filter
 
-    def _render_template(self, template_string: str, context: Dict) -> str:
+    def _render_template(self, data: Any, context: Dict) -> Any:
         """
-        Renders a template string using the Jinja2 engine.
-
-        This method is the single point of truth for all templating in the
-        declarative REST strategy. It expects a valid Jinja2 template string
-        and a context dictionary, and returns the rendered string.
+        Recursively renders Jinja templates within a data structure.
+        Crucially, if a string is JUST a single Jinja block (e.g., "{{ my_list }}"),
+        it evaluates it to its native Python type instead of casting to a string.
         """
-        # If the input is not a string or doesn't contain a template marker,
-        # return it as is. This is a fast path for static values.
-        if not isinstance(template_string, str) or "{{" not in template_string:
-            return template_string
+        if isinstance(data, dict):
+            return {k: self._render_template(v, context) for k, v in data.items()}
+        if isinstance(data, list):
+            return [self._render_template(i, context) for i in data]
 
-        try:
-            # Create a full context that includes the original context PLUS
-            # our dynamic 'system' object for things like timestamps.
-            full_context = {**context, "system": {"timestamp": str(int(time.time()))}}
+        if isinstance(data, str):
+            stripped_data = data.strip()
+            # HEURISTIC: If the string is ONLY a Jinja block, evaluate the expression
+            # to get the native Python object (e.g., a list, a dict).
+            if (
+                stripped_data.startswith("{{")
+                and stripped_data.endswith("}}")
+                and stripped_data.count("{{") == 1
+            ):
+                expression = stripped_data[2:-2].strip()
+                try:
+                    compiled_expr = self.jinja_env.compile_expression(expression)
+                    return compiled_expr(**context)
+                except Exception:
+                    # Fallback to standard string rendering on any error
+                    pass
 
-            template = self.jinja_env.from_string(template_string)
-            return template.render(full_context)
+            # For interpolation ("Hello {{ name }}") or fallbacks, render as a string.
+            if "{{" in data:
+                try:
+                    template = self.jinja_env.from_string(data)
+                    return template.render(context)
+                except TemplateError as e:
+                    raise ValueError(
+                        f"Jinja2 rendering failed for template '{data}': {e}"
+                    ) from e
 
-        except TemplateError as e:
-            # Provide a rich error message for easier debugging of blueprints.
-            raise ValueError(
-                f"Jinja2 rendering failed for template '{template_string}': {e}"
-            ) from e
+        # For all other types (int, bool, etc.), return as is
+        return data
+
+    def _load_pydantic_model(self, model_path_str: str, catalog: "ApiCatalog"):
+        schemas_py_file = catalog.schemas_module_path
+        if not schemas_py_file or not model_path_str.startswith("schemas."):
+            raise ImportError(
+                f"Cannot load model '{model_path_str}'. Invalid path or schemas file not found."
+            )
+
+        class_name = model_path_str.split(".", 1)[1]
+        spec = importlib.util.spec_from_file_location("schemas", schemas_py_file)
+        schemas_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schemas_module)
+
+        return getattr(schemas_module, class_name)
+
+    def _process_directives(self, data: Any) -> Any:
+        """
+        Recursively processes special 'directive' strings for file handling.
+        """
+        if isinstance(data, dict):
+            return {k: self._process_directives(v) for k, v in data.items()}
+        if isinstance(data, list):
+            return [self._process_directives(i) for i in data]
+
+        if isinstance(data, str):
+            if data.startswith("read_file:"):
+                path_str = data.split(":", 1)[1]
+                path = resolve_path(path_str.removeprefix("file://"))
+                return path.read_text(encoding="utf-8")
+            if data.startswith("b64encode_file:"):
+                path_str = data.split(":", 1)[1]
+                path = resolve_path(path_str.removeprefix("file://"))
+                content_bytes = path.read_bytes()
+                return base64.b64encode(content_bytes).decode("utf-8")
+
+        return data
 
     @asynccontextmanager
     async def get_client(self, connection: "Connection", secrets: Dict[str, Any]):
@@ -482,15 +535,9 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         debug_mode: bool = False,
     ) -> Dict[str, Any]:
         """
-        Executes a generic, templated action defined in the ApiCatalog blueprint.
-
-        This method is the runtime engine for blueprint actions. It performs a
-        "pre-flight check" by validating user parameters against a Pydantic model
-        before rendering templates and making the final HTTP request.
+        Executes a declarative action, using the Pydantic schema to validate a
+        structured context provided by the user, with special handling for file directives.
         """
-        import importlib.util
-        from pydantic import ValidationError
-
         template_key = action_params.get("template_key")
         log = logger.bind(connection_id=connection.id, template_key=template_key)
 
@@ -502,91 +549,69 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         action_templates = connection.catalog.browse_config.get("action_templates", {})
         template_config = action_templates.get(template_key)
         if not template_config:
-            raise ValueError(
-                f"Action '{template_key}' not found in blueprint's action_templates."
-            )
+            raise ValueError(f"Action '{template_key}' not found in blueprint.")
 
-        action_context = action_params.get("context", {})
-        validated_params = action_context
-
-        # --- Pydantic "Pre-Flight Check" Validation Layer ---
-        if "parameters_model" in template_config:
-            model_path_str = template_config["parameters_model"]
-            schemas_py_file = connection.catalog.schemas_module_path
-
-            if schemas_py_file and model_path_str.startswith("schemas."):
-                class_name = model_path_str.split(".", 1)[1]
-                try:
-                    # Use importlib to robustly load the schemas.py file as a module
-                    # The module name 'schemas' is arbitrary but conventional.
-                    spec = importlib.util.spec_from_file_location(
-                        "schemas", schemas_py_file
-                    )
-                    schemas_module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(schemas_module)
-
-                    ParamModel = getattr(schemas_module, class_name)
-
-                    # THE VALIDATION STEP: This is where Pydantic does its magic.
-                    # If arguments are missing or have wrong types, this will raise a ValidationError.
-                    validated_params_obj = ParamModel(**action_context)
-                    validated_params = validated_params_obj.model_dump(by_alias=True)
-                    log.info(
-                        "Successfully validated user parameters against Pydantic model.",
-                        model=class_name,
-                    )
-
-                except FileNotFoundError:
-                    log.error(
-                        "schemas.py file not found, skipping validation.",
-                        path=schemas_py_file,
-                    )
-                except (AttributeError, ImportError):
-                    log.error(
-                        f"Could not find or load model '{class_name}' from '{schemas_py_file}'. Skipping validation."
-                    )
-                except ValidationError as e:
-                    # Re-raise Pydantic's detailed error directly to the user. This is the goal.
-                    raise e
-
-        # --- Templating and Execution ---
-        render_context = {
+        user_context = action_params.get("context", {})
+        full_render_context = {
             "details": connection.details,
             "secrets": secrets,
             "script_input": script_input,
-            **validated_params,  # Use the validated and aliased parameters
+            "context": user_context,
         }
 
-        api_endpoint_template = template_config.get("api_endpoint")
-        if not api_endpoint_template:
-            raise ValueError("Action template is missing required key 'api_endpoint'.")
-
-        api_endpoint = self._render_template(api_endpoint_template, render_context)
-        http_method = template_config.get("http_method", "GET").upper()
-        log.info(
-            "Executing declarative action.", endpoint=api_endpoint, method=http_method
+        api_endpoint = self._render_template(
+            template_config.get("api_endpoint", ""), full_render_context
         )
+        http_method = template_config.get("http_method", "GET").upper()
 
         async with self.get_client(connection, secrets) as client:
             request_kwargs = {}
-            if http_method in ["POST", "PUT", "PATCH"]:
-                if "payload_constructor" in template_config:
-                    # In a future version, we would perform Pydantic validation on the payload here too.
-                    # For now, we assume the context is correct for the body.
-                    payload_template = {
-                        "_constructor": template_config["payload_constructor"][
-                            "_constructor"
-                        ],
-                        **validated_params,
-                    }
-                    rendered_payload_str = self._render_template(
-                        json.dumps(payload_template), render_context
+            if (
+                http_method in ["POST", "PUT", "PATCH"]
+                and "payload_constructor" in template_config
+            ):
+                constructor_config = template_config["payload_constructor"]
+                if "_model" not in constructor_config:
+                    raise ValueError(
+                        "payload_constructor in blueprint must contain a '_model' key."
                     )
-                    request_kwargs["json"] = json.loads(rendered_payload_str)
 
+                model_name = constructor_config["_model"]
+                PayloadModel = self._load_pydantic_model(model_name, connection.catalog)
+
+                # 1. Render the user's structured context to resolve Jinja variables.
+                rendered_context = self._render_template(
+                    user_context, full_render_context
+                )
+
+                # 2. Recursively process special file-handling directives.
+                processed_context = self._process_directives(rendered_context)
+
+                # 3. Validate the final, processed data against the target Pydantic model.
+                try:
+                    adapter = TypeAdapter(PayloadModel)
+                    validated_model = adapter.validate_python(processed_context)
+                    request_kwargs["json"] = validated_model.model_dump(
+                        by_alias=True, exclude_unset=True
+                    )
+                    log.info("Successfully validated API payload.", model=model_name)
+                except ValidationError as e:
+                    log.error(
+                        "Payload validation failed against Pydantic model.",
+                        model=model_name,
+                        errors=str(e),
+                    )
+                    raise ValueError(
+                        f"Failed to build valid payload for {model_name}: {e}"
+                    ) from e
+
+            log.info(
+                "Executing declarative action API call.",
+                endpoint=api_endpoint,
+                method=http_method,
+            )
             response = await client.request(http_method, api_endpoint, **request_kwargs)
             response.raise_for_status()
-
             return (
                 response.json()
                 if response.content

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ..operations.file_format_ops import ArtifactType  # Import the shared ArtifactType
 from ..vfs_client import AbstractVfsClient
 from .base import BaseTransformEngine
+from ....utils import resolve_path
 
 logger = structlog.get_logger(__name__)
 
@@ -94,7 +95,8 @@ class JinjaEngine(BaseTransformEngine):
 
         try:
             # Jinja will now correctly find the template using the ChoiceLoader.
-            template = self.jinja_env.get_template(op_model.template_path)
+            template_path = resolve_path(op_model.template_path)
+            template = self.jinja_env.get_template(str(template_path))
         except Exception as e:
             log.error(
                 "jinja.template_load_failed", path=op_model.template_path, error=str(e)

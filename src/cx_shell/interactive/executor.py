@@ -149,8 +149,14 @@ class CommandTransformer(Transformer):
     def flow_list(self):
         return FlowCommand("list")
 
-    def flow_run(self, flow_name, arguments=None):
-        return FlowCommand("run", name=flow_name.value, args=arguments)
+    # def flow_run(self, flow_name, arguments=None):
+    #     return FlowCommand("run", name=flow_name.value, args=arguments)
+
+    def flow_run_with_args(self, flow_name, arguments=None):
+        return FlowCommand("run", name=flow_name.value, args=arguments or {})
+
+    def flow_run_no_args(self, flow_name):
+        return FlowCommand("run", name=flow_name.value, args={})
 
     def query_list(self):
         return QueryCommand("list")

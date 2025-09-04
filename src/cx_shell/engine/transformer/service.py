@@ -55,7 +55,6 @@ class TransformerService:
         if not initial_input:
             raise ValueError("Transformer service received no input data.")
 
-        # --- THIS IS THE FIX ---
         # Intelligently unpack the data from common wrapper formats.
         unpacked_data = initial_input
 
@@ -74,19 +73,20 @@ class TransformerService:
                 )
                 pass  # Keep unpacked_data as is if content isn't valid JSON
 
-        # Now, proceed with the existing logic on the unpacked data.
+        # Get query_parameters from the run_context first, defaulting to {} if not present.
+        query_parameters = run_context.get("query_parameters", {})
+
         list_of_records = []
-        query_parameters = {}  # This is less relevant for piped data.
 
         if isinstance(unpacked_data, list):
             list_of_records = unpacked_data
         elif isinstance(unpacked_data, dict):
+            # This check is now redundant given our new flow, but safe to keep.
             list_of_records = [unpacked_data]
         else:
             raise TypeError(
                 f"Unsupported input type for transformer: {type(unpacked_data).__name__}"
             )
-        # --- END FIX ---
 
         log.info(
             "Extracted data from pipeline input.",

@@ -14,6 +14,8 @@ import networkx as nx
 from jinja2 import Environment
 from cx_core_schemas.connector_script import ConnectorScript, ConnectorStep
 from cx_core_schemas.vfs import VfsFileContentResponse, VfsNodeMetadata
+from ...engine.transformer.service import TransformerService
+from ...utils import resolve_path
 
 from .caching.manager import CacheManager
 from .config import ConnectionResolver
@@ -90,21 +92,49 @@ class ScriptEngine:
         log = logger.bind(step_id=step.id, step_name=step.name)
         session_vars = session_variables or {}
 
-        # --- Just-in-Time Rendering ---
         def recursive_render(data: Any, context: Dict):
+            """
+            Recursively renders Jinja templates.
+            Crucially, if a string is JUST a single Jinja block, it evaluates
+            it to its native Python type instead of casting to a string.
+            """
             if isinstance(data, dict):
                 return {k: recursive_render(v, context) for k, v in data.items()}
             if isinstance(data, list):
                 return [recursive_render(i, context) for i in data]
-            if isinstance(data, str) and "{{" in data:
-                # Merge session variables into the render context.
-                # Session variables have higher priority, allowing them to override.
-                full_render_context = {**context, **session_vars}
-                return self.jinja_env.from_string(data).render(full_render_context)
+
+            if isinstance(data, str):
+                stripped_data = data.strip()
+                # Heuristic: if the string is ONLY a Jinja block, evaluate it.
+                if (
+                    stripped_data.startswith("{{")
+                    and stripped_data.endswith("}}")
+                    and stripped_data.count("{{") == 1
+                ):
+                    expression = stripped_data[2:-2].strip()
+                    try:
+                        # Compile and run the expression to get the native object
+                        compiled_expr = self.jinja_env.compile_expression(expression)
+                        return compiled_expr(**context)
+                    except Exception:
+                        # Fallback to string rendering on error
+                        pass
+
+                # For interpolation ("Hello {{ name }}") or fallbacks, render as string.
+                if "{{" in data:
+                    return self.jinja_env.from_string(data).render(**context)
+
             return data
 
         try:
-            rendered_action_data = recursive_render(step.run.model_dump(), run_context)
+            full_render_context = {**run_context, **session_vars}
+            rendered_action_data = recursive_render(
+                step.run.model_dump(), full_render_context
+            )
+            # log.info(
+            #     "DEBUG: Data rendered by Jinja before Pydantic validation",
+            #     data=safe_serialize(rendered_action_data),
+            # )
             action = type(step.run)(**rendered_action_data)
         except Exception as e:
             log.error(
@@ -115,10 +145,34 @@ class ScriptEngine:
             ) from e
 
         # --- Action Dispatcher ---
-        connection, secrets = await self.resolver.resolve(step.connection_source)
-        strategy = self.connector._get_strategy_for_connection_model(connection)
+        connection, secrets, strategy = None, None, None
+        if step.connection_source:
+            connection, secrets = await self.resolver.resolve(step.connection_source)
+            strategy = self.connector._get_strategy_for_connection_model(connection)
 
-        # This is the full, non-placeholder dispatcher logic
+        # --- v0.2.1: Native run_transform action ---
+        if action.action == "run_transform":
+            log.info(
+                "Executing native transform action.", script_path=action.script_path
+            )
+            transformer_run_context = {
+                "initial_input": action.input_data.get("data", []),
+                "query_parameters": action.input_data.get("query_parameters", {}),
+            }
+            transformer_script_path = resolve_path(action.script_path)
+            with open(transformer_script_path, "r") as f:
+                transformer_script_data = yaml.safe_load(f)
+            transformer_service = TransformerService()
+            return await transformer_service.run(
+                transformer_script_data, transformer_run_context
+            )
+
+        # --- Standard Connection-Based Actions ---
+        if not strategy:
+            raise ValueError(
+                f"Step '{step.name}' requires a connection_source, but none was provided or resolved."
+            )
+
         if action.action == "test_connection":
             return await strategy.test_connection(connection, secrets)
         elif action.action == "run_declarative_action":
@@ -133,28 +187,20 @@ class ScriptEngine:
             response = await strategy.browse_path(
                 action.path.strip("/").split("/"), connection, secrets
             )
-            # For browse, the raw list of nodes is often the desired output.
-            # The _transform helper is for older strategies returning raw httpx responses.
             if isinstance(response, httpx.Response):
                 return self._transform_browse_response(
                     response, connection, action.path
                 )
             return response
         elif action.action == "read_content":
-            # We now pass the raw, unsplit path as a single-element list.
-            # This preserves the full URL. The strategy is now responsible
-            # for correctly interpreting the contents of this list.
             path_parts = [action.path]
             vfs_response = await strategy.get_content(path_parts, connection, secrets)
-            # --- END FIX ---
             final_result_for_user = vfs_response.model_dump()
-            raw_content_for_cache = vfs_response.content.encode("utf-8")
-            # return vfs_response.content
             return final_result_for_user
         elif action.action == "run_sql_query":
             query_source = action.query
             query_string = (
-                Path(query_source.split(":", 1)[1]).read_text(encoding="utf-8")
+                resolve_path(query_source.split(":", 1)[1]).read_text(encoding="utf-8")
                 if query_source.startswith("file:")
                 else query_source
             )
@@ -164,7 +210,6 @@ class ScriptEngine:
             return {"parameters": action.parameters, "data": query_data}
         elif hasattr(strategy, action.action):
             method_to_call = getattr(strategy, action.action)
-            # Pass all required context to the strategy methods
             if action.action in [
                 "aggregate_content",
                 "run_python_script",
@@ -288,71 +333,6 @@ class ScriptEngine:
 
         # Delegate the core execution logic to the new model-based runner
         return await self.run_script_model(script_model, script_input, debug_mode)
-
-    # async def run_script(
-    #     self,
-    #     script_path: Path,
-    #     script_input: Dict[str, Any] = {},
-    #     debug_mode: bool = False,
-    # ):
-    #     log = logger.bind(script_path=str(script_path))
-    #     log.info("DAG-based ScriptEngine running script.")
-
-    #     with open(script_path, "r", encoding="utf-8") as f:
-    #         script_data = yaml.safe_load(f)
-    #     script_data["script_input"] = script_input
-    #     script_model = ConnectorScript(**script_data)
-
-    #     dag = self._build_dependency_graph(script_model.steps)
-    #     topological_generations = list(nx.topological_generations(dag))
-
-    #     run_context = {"script_input": script_input, "steps": {}}
-    #     results: Dict[str, Any] = {}
-
-    #     for generation in topological_generations:
-    #         tasks = [
-    #             self._execute_step(
-    #                 dag.nodes[step_id]["step_data"], run_context, debug_mode
-    #             )
-    #             for step_id in generation
-    #         ]
-    #         generation_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    #         for step_id, step_result in zip(generation, generation_results):
-    #             step_data = dag.nodes[step_id]["step_data"]
-    #             if isinstance(step_result, Exception):
-    #                 log.error(
-    #                     "Step failed during parallel execution.",
-    #                     step_id=step_id,
-    #                     error=str(step_result),
-    #                     exc_info=step_result,
-    #                 )
-    #                 results[step_data.name] = {
-    #                     "error": f"{type(step_result).__name__}: {step_result}"
-    #                 }
-    #                 return results  # Fail fast
-
-    #             results[step_data.name] = step_result
-    #             step_outputs = {}
-    #             if step_data.outputs:
-    #                 for output_name, query in step_data.outputs.items():
-    #                     try:
-    #                         step_outputs[output_name] = jmespath.search(
-    #                             query, step_result
-    #                         )
-    #                     except Exception as e:
-    #                         log.warn(
-    #                             "Failed to extract output.",
-    #                             output_name=output_name,
-    #                             error=str(e),
-    #                         )
-    #             run_context["steps"][step_id] = {
-    #                 "result": step_result,
-    #                 "outputs": step_outputs,
-    #             }
-
-    #     log.info("Script execution finished successfully.")
-    #     return results
 
     def _transform_browse_response(
         self, response: httpx.Response, connection: "Connection", vfs_path: str
