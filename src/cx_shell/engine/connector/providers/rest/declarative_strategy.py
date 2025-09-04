@@ -350,52 +350,61 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         secrets: Dict[str, Any],
         client: httpx.AsyncClient | None = None,
     ) -> "VfsFileContentResponse":
-        """Fetches content for a VFS "file" by interpreting the `browse_config` blueprint."""
-        log = logger.bind(
-            connection_id=connection.id, vfs_path=f"/{'/'.join(path_parts)}"
-        )
-        browse_config = connection.catalog.browse_config if connection.catalog else None
-        if not browse_config:
-            raise FileNotFoundError(
-                "Browse configuration is missing from the connection's catalog."
-            )
+        """Fetches content, intelligently handling both relative paths and absolute URLs."""
+        # This is the path provided by the user/script, e.g., ['/users/123'] or ['https://...']
+        path_segment = path_parts[0] if path_parts else ""
 
-        render_context = {"details": connection.details, "secrets": secrets}
-        endpoint, item_type = self._determine_content_endpoint(
-            path_parts, browse_config, render_context
+        log = logger.bind(
+            connection_id=connection.id, vfs_path=f"/{path_segment.lstrip('/')}"
         )
+
+        # --- THIS IS THE FIX ---
+        is_absolute_url = path_segment.lower().startswith(("http://", "https://"))
+
+        if is_absolute_url:
+            # If the path is a full URL, use it directly and ignore the base_url.
+            endpoint = path_segment
+            # Use a generic httpx client for this one-off request.
+            # We don't use the connection's configured client because the host is different.
+            active_client = httpx.AsyncClient(timeout=30.0)
+            log.info("get_content.absolute_url_detected", url=endpoint)
+        else:
+            # If it's a relative path, use the standard logic with the connection's client.
+            browse_config = (
+                connection.catalog.browse_config if connection.catalog else None
+            )
+            if not browse_config:
+                raise FileNotFoundError("Browse configuration is missing.")
+            render_context = {"details": connection.details, "secrets": secrets}
+            endpoint, _ = self._determine_content_endpoint(
+                path_parts, browse_config, render_context
+            )
+            # This is a placeholder for the real client manager logic
+            active_client = client or self.get_client(connection, secrets)
+        # --- END FIX ---
+
         log = log.bind(api_endpoint=endpoint)
         log.info("get_content.calling_api")
 
         try:
-            async with self._get_client_manager(
-                connection, secrets, client
-            ) as active_client:
-                response = await active_client.get(endpoint)
+            # The 'async with' ensures the client is closed, whether it's a new one
+            # for an absolute URL or a managed one from the connection.
+            async with active_client as managed_client:
+                response = await managed_client.get(endpoint)
                 log.info("get_content.api_response", status_code=response.status_code)
                 response.raise_for_status()
                 content_data = response.json()
 
-            response_key_template = browse_config.get(
-                "get_content_response_key_template"
-            )
-            if response_key_template:
-                render_context = {"item_type": item_type}
-                response_key = self._render_template(
-                    response_key_template.replace(
-                        "item_type_singular", "item_type|rstrip('s')"
-                    ),
-                    render_context,
-                )
-                content_data = content_data.get(response_key, content_data)
-
+            # The rest of the logic for creating the VfsFileContentResponse is the same
             content_as_string = json.dumps(safe_serialize(content_data), indent=2)
             now = datetime.now(timezone.utc)
             etag = response.headers.get("etag", f'"{hash(content_as_string)}"')
             metadata = VfsNodeMetadata(
                 can_write=False, is_versioned=False, etag=etag, last_modified=now
             )
-            full_vfs_path = f"vfs://connections/{connection.id}/{'/'.join(path_parts)}"
+            full_vfs_path = (
+                f"vfs://connections/{connection.id}/{path_segment.lstrip('/')}"
+            )
 
             return VfsFileContentResponse(
                 path=full_vfs_path,
@@ -412,12 +421,12 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
                 response_text=e.response.text[:500],
             )
             raise FileNotFoundError(
-                f"API call failed with status {e.response.status_code}"
+                f"API call to '{endpoint}' failed with status {e.response.status_code}"
             ) from e
         except Exception as e:
             log.error("get_content.unexpected_error", error=str(e), exc_info=True)
             raise IOError(
-                f"An unexpected error occurred while fetching content: {e}"
+                f"An unexpected error occurred while fetching content from '{endpoint}': {e}"
             ) from e
 
     def _determine_content_endpoint(

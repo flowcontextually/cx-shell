@@ -3,9 +3,9 @@ from typing import Dict, Optional
 
 from rich.console import Console
 from rich.table import Table
-from prompt_toolkit import prompt
-from prompt_toolkit.shortcuts import confirm
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.shortcuts import PromptSession
+from prompt_toolkit.formatted_text import HTML
 from ..engine.connector.config import ConnectionResolver, CX_HOME
 
 # Use a single, shared console for all rich output.
@@ -19,8 +19,8 @@ class ConnectionManager:
         self.resolver = ConnectionResolver()
         self.connections_dir = CX_HOME / "connections"
         self.secrets_dir = CX_HOME / "secrets"
-        self.connections_dir.mkdir(exist_ok=True)
-        self.secrets_dir.mkdir(exist_ok=True)
+        self.connections_dir.mkdir(exist_ok=True, parents=True)
+        self.secrets_dir.mkdir(exist_ok=True, parents=True)
 
     def list_connections(self):
         """Lists all locally configured connections."""
@@ -50,18 +50,19 @@ class ConnectionManager:
 
         console.print(table)
 
-    def create_interactive(self, preselected_blueprint_id: Optional[str] = None):
-        """
-        Interactively creates a new connection by loading a blueprint.
-        """
+    async def create_interactive(self, preselected_blueprint_id: Optional[str] = None):
+        """Asynchronously and interactively creates a new connection by loading a blueprint."""
         console.print(
             "[bold green]--- Create a New Connection (Interactive) ---[/bold green]"
         )
 
-        blueprint_id = preselected_blueprint_id or prompt(
-            "Enter the Blueprint ID to use (e.g., system/mssql@v0.1.0): "
+        prompt_session = PromptSession()
+
+        blueprint_id = preselected_blueprint_id or await prompt_session.prompt_async(
+            "Enter the Blueprint ID to use (e.g., system/mssql@v0.1.1): "
         )
 
+        # ... (rest of the logic is the same, just with async prompts) ...
         status_text = (
             f"Loading blueprint [bold magenta]{blueprint_id}[/bold magenta]..."
         )
@@ -87,9 +88,8 @@ class ConnectionManager:
             for i, method in choices.items():
                 console.print(f"  [cyan]{i}[/cyan]: {method.display_name}")
 
-            # Use a WordCompleter for a better selection experience
             choice_completer = WordCompleter(list(choices.keys()))
-            choice_str = prompt(
+            choice_str = await prompt_session.prompt_async(
                 "Enter your choice (1): ", completer=choice_completer, default="1"
             )
             chosen_method = choices.get(choice_str, auth_methods[0])
@@ -97,19 +97,19 @@ class ConnectionManager:
         console.print(
             f"\nPlease provide the following details for '[yellow]{chosen_method.display_name}[/yellow]':"
         )
-        conn_name = prompt("Enter a friendly name for this connection: ")
-        conn_id = prompt(
-            f"Enter a unique ID (alias) ({conn_name.lower().replace(' ', '-')}) : ",
-            default=conn_name.lower().replace(" ", "-"),
+        conn_name = await prompt_session.prompt_async(
+            "Enter a friendly name for this connection: "
+        )
+        default_id = conn_name.lower().replace(" ", "-")
+        conn_id = await prompt_session.prompt_async(
+            f"Enter a unique ID (alias) ({default_id}) : ", default=default_id
         )
 
         details, secrets = {}, {}
         for field in chosen_method.fields:
-            # --- THIS IS THE KEY CHANGE (PROMPTING) ---
-            # Use prompt_toolkit's `prompt` function with `is_password=True`
-            # which correctly renders asterisks for feedback.
-            value = prompt(f"{field.label}: ", is_password=field.is_password)
-            # --- END CHANGE ---
+            value = await prompt_session.prompt_async(
+                f"{field.label}: ", is_password=field.is_password
+            )
             if field.type == "secret":
                 secrets[field.name] = value
             else:
@@ -131,8 +131,10 @@ class ConnectionManager:
         console.print("\n[bold]Configuration to be saved:[/bold]")
         console.print(yaml.dump(conn_content, sort_keys=False))
 
-        # Use prompt_toolkit's `confirm` function for a y/n prompt
-        if confirm("\nDo you want to save this connection? "):
+        confirmed = await prompt_session.prompt_async(
+            HTML("\nDo you want to save this connection? [<b>y</b>/n]: "),
+        )
+        if confirmed.lower() != "n":
             conn_file.write_text(yaml.dump(conn_content, sort_keys=False))
             secret_file.write_text(secrets_content)
             console.print(

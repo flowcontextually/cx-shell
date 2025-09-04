@@ -43,6 +43,9 @@ class PandasEngine(BaseTransformEngine):
                         col.replace("_", " ").title() for col in data.columns
                     ]
 
+                elif op_model.style == "upper_case":
+                    data.columns = [col.upper() for col in data.columns]
+
                 elif op_model.style == "pascal_case":
                     data.columns = [
                         col.replace("_", " ").title().replace(" ", "")

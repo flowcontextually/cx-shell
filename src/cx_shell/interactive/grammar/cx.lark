@@ -1,0 +1,83 @@
+// /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/grammar/cx.lark
+
+?start: command_line
+command_line: executable [formatter]
+
+executable: assignment | pipeline | single_executable
+pipeline: single_executable ("|" single_executable)+
+assignment: CNAME "=" executable
+
+single_executable: single_command | variable_lookup | "(" executable ")"
+variable_lookup: CNAME
+
+single_command: dot_notation_kw_action | dot_notation_pos_action
+              | connect_command | connections_command | help_command
+              | inspect_command
+              | transform_command | extract_command
+              | session_list | session_save | session_load | session_rm | session_status
+              | variable_list | variable_rm
+              | flow_list | flow_run_with_args | flow_run_no_args
+              | query_list | query_run_with_args | query_run_no_args
+              | script_list | script_run_with_args | script_run_no_args
+              | connection_list | connection_create
+              | open_command 
+
+formatter: formatter_option+
+formatter_option: output_option | columns_option | query_option
+output_option: "--output" CNAME
+columns_option: "--columns" column_list
+query_option: "--query" STRING
+column_list: CNAME ("," CNAME)*
+
+// --- COMMAND DEFINITIONS ---
+dot_notation_kw_action: CNAME "." CNAME "(" [arguments] ")"
+dot_notation_pos_action: CNAME "." CNAME "(" STRING ")"
+connect_command: "connect" ARG "--as" CNAME
+connections_command: "connections"
+help_command: "help"
+inspect_command: "inspect" ARG
+transform_command: "transform" "run" "--script" ARG
+extract_command: "extract" "run" "--script" ARG
+
+session_list: "session" "list"
+session_save: "session" "save" ARG
+session_load: "session" "load" ARG
+session_rm: "session" "rm" ARG
+session_status: "session" "status"
+
+variable_list: ("var" | "vars") "list"
+variable_rm: ("var" | "vars") "rm" ARG
+
+// --- DEFINITIVE FIX FOR ALL RUN COMMANDS ---
+flow_list: "flow" "list"
+flow_run_with_args: "flow" "run" ARG arguments
+flow_run_no_args: "flow" "run" ARG
+
+query_list: "query" "list"
+query_run_with_args: "query" "run" "--on" CNAME ARG arguments
+query_run_no_args: "query" "run" "--on" CNAME ARG
+
+script_list: "script" "list"
+script_run_with_args: "script" "run" ARG arguments
+script_run_no_args: "script" "run" ARG
+// --- END FIX ---
+
+connection_list: "connection" "list"
+connection_create: "connection" "create" "--blueprint" STRING
+
+open_command: "open" (JINJA_BLOCK | ARG) [ARG] open_flag*
+
+open_flag: "--on" CNAME -> on_alias
+         | "--in" CNAME -> handler
+
+// --- ARGUMENT & TERMINAL DEFINITIONS ---
+arguments: (kw_argument ("," kw_argument)*) // This is now non-optional where used
+kw_argument: CNAME "=" value
+value: STRING | NUMBER | "true" -> true | "false" -> false | "null" -> null | CNAME | JINJA_BLOCK
+ARG: /[\/a-zA-Z0-9_:\-.~]+/
+JINJA_BLOCK: /\{\{.*?\}\}/
+%import common.ESCAPED_STRING -> STRING
+%import common.SIGNED_NUMBER -> NUMBER
+%import common.CNAME
+%import common.WS
+%ignore WS

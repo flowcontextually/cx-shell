@@ -38,6 +38,7 @@ dependencies = [
     "jmespath>=1.0.0",
     "networkx>=3.0",
     "prompt-toolkit>=3.0.0",
+    "lark>=1.1.9",
 ]
 
 # --- Optional Dependencies (Merged) ---

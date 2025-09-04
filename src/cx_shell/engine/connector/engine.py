@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def sql_quote_filter(value):
+    """A Jinja2 filter that correctly quotes a value for use in a SQL query."""
+    if value is None:
+        return "NULL"
+    # Basic escaping for single quotes within the string
+    sanitized_value = str(value).replace("'", "''")
+    return f"'{sanitized_value}'"
+
+
 class ScriptEngine:
     """
     Orchestrates the execution of a declarative .connector.yaml script.
@@ -46,6 +55,7 @@ class ScriptEngine:
         self.connector = connector
         self.cache_manager = CacheManager()
         self.jinja_env = Environment()
+        self.jinja_env.filters["sqlquote"] = sql_quote_filter
 
     def _build_dependency_graph(self, steps: list[ConnectorStep]) -> nx.DiGraph:
         """Parses script steps and builds a NetworkX dependency graph."""
@@ -71,10 +81,14 @@ class ScriptEngine:
         return dag
 
     async def _execute_step(
-        self, step: ConnectorStep, run_context: Dict, debug_mode: bool
+        self,
+        step: ConnectorStep,
+        run_context: Dict,
+        debug_mode: bool,
+        session_variables: Dict[str, Any] = None,
     ) -> Any:
-        """Executes a single, fully-rendered step of the workflow."""
         log = logger.bind(step_id=step.id, step_name=step.name)
+        session_vars = session_variables or {}
 
         # --- Just-in-Time Rendering ---
         def recursive_render(data: Any, context: Dict):
@@ -83,7 +97,10 @@ class ScriptEngine:
             if isinstance(data, list):
                 return [recursive_render(i, context) for i in data]
             if isinstance(data, str) and "{{" in data:
-                return self.jinja_env.from_string(data).render(context)
+                # Merge session variables into the render context.
+                # Session variables have higher priority, allowing them to override.
+                full_render_context = {**context, **session_vars}
+                return self.jinja_env.from_string(data).render(full_render_context)
             return data
 
         try:
@@ -166,54 +183,87 @@ class ScriptEngine:
     async def run_script_model(
         self,
         script_model: ConnectorScript,
-        script_input: Dict[str, Any] = {},
+        script_input: Dict[str, Any] = None,
         debug_mode: bool = False,
+        session_variables: Dict[str, Any] = None,
     ):
         """
-        Executes a declarative workflow directly from a Pydantic model instance.
+        Executes a declarative workflow directly from a Pydantic model instance,
+        handling step dependencies, context injection, and error propagation.
+
+        Args:
+            script_model: The Pydantic model of the script to execute.
+            script_input: Data piped from a previous command or stdin.
+            debug_mode: Flag to enable verbose debugging features.
+            session_variables: A dictionary of variables from the interactive session
+                               to be made available for templating.
         """
         log = logger.bind(script_name=script_model.name)
         log.info("DAG-based ScriptEngine running script from model.")
 
         dag = self._build_dependency_graph(script_model.steps)
         topological_generations = list(nx.topological_generations(dag))
-        run_context = {"script_input": script_input, "steps": {}}
+
+        # Ensure script_input and session_variables are dictionaries to prevent None errors.
+        processed_script_input = script_input or {}
+        processed_session_variables = session_variables or {}
+
+        run_context = {"script_input": processed_script_input, "steps": {}}
         results: Dict[str, Any] = {}
 
         for generation in topological_generations:
             tasks = [
                 self._execute_step(
-                    dag.nodes[step_id]["step_data"], run_context, debug_mode
+                    dag.nodes[step_id]["step_data"],
+                    run_context,
+                    debug_mode,
+                    processed_session_variables,
                 )
                 for step_id in generation
             ]
+
+            # Execute steps in the current generation concurrently
             generation_results = await asyncio.gather(*tasks, return_exceptions=True)
+
             for step_id, step_result in zip(generation, generation_results):
                 step_data = dag.nodes[step_id]["step_data"]
+
+                # If a step failed, capture the error and halt execution of subsequent steps.
                 if isinstance(step_result, Exception):
-                    log.error("Step failed", step_id=step_id, error=str(step_result))
-                    # In interactive mode, we want to see the error but not crash.
+                    log.error(
+                        "Step failed during execution.",
+                        step_id=step_id,
+                        step_name=step_data.name,
+                        error=str(step_result),
+                        exc_info=step_result if debug_mode else False,
+                    )
+                    # Package the error into a clean dictionary for the caller
                     results[step_data.name] = {
                         "error": f"{type(step_result).__name__}: {step_result}"
                     }
-                    # We might choose to stop or continue on error depending on the use case.
-                    # For a simple interactive command, stopping is fine.
+                    # Immediately return to prevent dependent steps from running
                     return results
 
+                # If the step succeeded, store its result
                 results[step_data.name] = step_result
                 step_outputs = {}
                 if step_data.outputs:
                     for output_name, query in step_data.outputs.items():
                         try:
+                            # Use JMESPath to extract specific values from the result
                             step_outputs[output_name] = jmespath.search(
                                 query, step_result
                             )
                         except Exception as e:
                             log.warn(
-                                "Failed to extract output",
+                                "Failed to extract output from step result.",
+                                step_name=step_data.name,
                                 output_name=output_name,
+                                jmespath_query=query,
                                 error=str(e),
                             )
+
+                # Update the run_context so subsequent steps can reference this step's output
                 run_context["steps"][step_id] = {
                     "result": step_result,
                     "outputs": step_outputs,

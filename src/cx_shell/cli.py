@@ -146,6 +146,9 @@ def init():
     connections_dir = CX_HOME / "connections"
     secrets_dir = CX_HOME / "secrets"
     user_blueprints_dir = BLUEPRINTS_BASE_PATH / "user"
+    flows_dir = CX_HOME / "flows"
+    queries_dir = CX_HOME / "queries"
+    scripts_dir = CX_HOME / "scripts"
     sample_blueprint_target_dir = (
         BLUEPRINTS_BASE_PATH / "community" / "github" / "v0.1.0"
     )
@@ -154,6 +157,9 @@ def init():
         connections_dir,
         secrets_dir,
         user_blueprints_dir,
+        flows_dir,
+        queries_dir,
+        scripts_dir,
         sample_blueprint_target_dir,
     ]
 
