@@ -435,3 +435,21 @@ class OpenCommand(Command):
         raise NotImplementedError(
             "OpenCommand execution is handled by the CommandExecutor."
         )
+
+
+class AppCommand(Command):
+    """Represents an application management command, e.g., `app install ...`."""
+
+    def __init__(self, subcommand: str, arg: str | None = None):
+        self.subcommand = subcommand
+        self.arg = arg
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        # This will be handled directly by the CommandExecutor's dispatch logic
+        raise NotImplementedError

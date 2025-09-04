@@ -23,6 +23,7 @@ from ..management.query_manager import QueryManager
 from ..management.script_manager import ScriptManager
 from ..management.connection_manager import ConnectionManager
 from ..management.open_manager import OpenManager
+from ..management.app_manager import AppManager
 from .commands import (
     Command,
     DotNotationCommand,
@@ -38,6 +39,7 @@ from .commands import (
     ScriptCommand,
     ConnectionCommand,
     OpenCommand,
+    AppCommand,
 )
 from .session import SessionState
 
@@ -193,6 +195,18 @@ class CommandTransformer(Transformer):
                     handler = arg.children[0].value
         return OpenCommand(asset_type, asset_name, handler, on_alias)
 
+    def app_list(self):
+        return AppCommand("list")
+
+    def app_install(self, arg):
+        return AppCommand("install", arg.value)
+
+    def app_uninstall(self, arg):
+        return AppCommand("uninstall", arg.value)
+
+    def app_sync(self):
+        return AppCommand("sync")
+
     def arguments(self, *args):
         return dict(args)
 
@@ -233,6 +247,7 @@ class CommandExecutor:
         self.script_manager = ScriptManager()
         self.connection_manager = ConnectionManager()
         self.open_manager = OpenManager()
+        self.app_manager = AppManager()
         self.builtin_commands = {
             "connect": self.execute_connect,
             "connections": self.execute_list_connections,
@@ -402,6 +417,20 @@ class CommandExecutor:
                 command.handler,
                 command.on_alias,
             )
+        elif isinstance(command, AppCommand):
+            if command.subcommand == "list":
+                await self.app_manager.list_installed_apps()
+            elif command.subcommand == "install":
+                with console.status(f"Installing application '{command.arg}'..."):
+                    await self.app_manager.install(command.arg)
+            elif command.subcommand == "uninstall":
+                await self.app_manager.uninstall(command.arg)
+            else:
+                # For now, placeholder for sync
+                console.print(
+                    f"[yellow]'{command.subcommand}' command is not yet fully implemented.[/yellow]"
+                )
+            return  # App commands don't return data to the pipeline
         elif isinstance(command, InspectCommand):
             return await command.execute(self.state, self.service, None)
         else:

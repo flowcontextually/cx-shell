@@ -20,7 +20,8 @@ single_command: dot_notation_kw_action | dot_notation_pos_action
               | query_list | query_run_with_args | query_run_no_args
               | script_list | script_run_with_args | script_run_no_args
               | connection_list | connection_create
-              | open_command 
+              | open_command
+              | app_list | app_install | app_uninstall | app_sync
 
 formatter: formatter_option+
 formatter_option: output_option | columns_option | query_option
@@ -69,6 +70,11 @@ open_command: "open" (JINJA_BLOCK | ARG) [ARG] open_flag*
 
 open_flag: "--on" CNAME -> on_alias
          | "--in" CNAME -> handler
+
+app_list: "app" "list"
+app_install: "app" "install" ARG
+app_uninstall: "app" "uninstall" ARG
+app_sync: "app" "sync"
 
 // --- ARGUMENT & TERMINAL DEFINITIONS ---
 arguments: (kw_argument ("," kw_argument)*) // This is now non-optional where used

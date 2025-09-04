@@ -18,6 +18,10 @@ from cx_shell.engine.connector.service import ConnectorService
 from cx_shell.interactive.main import start_repl
 from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
 from cx_shell.management.connection_manager import ConnectionManager
+from cx_shell.management.app_manager import AppManager
+from cx_shell.management.flow_manager import FlowManager
+from cx_shell.management.query_manager import QueryManager
+from cx_shell.management.script_manager import ScriptManager
 from cx_shell.state import APP_STATE
 
 # from cx_shell.utils import get_asset_path # Assuming you create this file
@@ -92,6 +96,28 @@ app = typer.Typer(
 connection_app = typer.Typer(
     name="connection", help="Manage your local connections.", no_args_is_help=True
 )
+
+app_app = typer.Typer(
+    name="app",
+    help="Discover, install, and manage Contextually Applications.",
+    no_args_is_help=True,
+)
+flow_app = typer.Typer(
+    name="flow",
+    help="List and manage reusable .flow.yaml workflows.",
+    no_args_is_help=True,
+)
+query_app = typer.Typer(
+    name="query", help="List and manage reusable .sql queries.", no_args_is_help=True
+)
+script_app = typer.Typer(
+    name="script", help="List and manage reusable .py scripts.", no_args_is_help=True
+)
+
+app.add_typer(app_app, name="app")
+app.add_typer(flow_app, name="flow")
+app.add_typer(query_app, name="query")
+app.add_typer(script_app, name="script")
 
 
 @app.callback(invoke_without_command=True)
@@ -398,3 +424,73 @@ def connection_create(
     except Exception as e:
         console.print(f"\n[bold red]An unexpected error occurred:[/bold red] {e}")
         raise typer.Exit(code=1)
+
+
+@app_app.command("search")
+@handle_exceptions
+def app_search(
+    query: str = typer.Argument(
+        None, help="Optional search query to filter applications."
+    ),
+):
+    """Searches the public application registry."""
+    manager = AppManager()
+    asyncio.run(manager.search(query))
+
+
+@app_app.command("install")
+@handle_exceptions
+def app_install(
+    app_id: str = typer.Argument(
+        ...,
+        help="The ID of the application to install (e.g., official/github-repo-manager).",
+    ),
+):
+    """Installs an application from the public registry."""
+    manager = AppManager()
+    asyncio.run(manager.install(app_id))
+
+
+@app_app.command("list")
+@handle_exceptions
+def app_list():
+    """Lists all locally installed applications."""
+    manager = AppManager()
+    asyncio.run(manager.list_installed_apps())
+
+
+@app_app.command("uninstall")
+@handle_exceptions
+def app_uninstall(
+    app_id: str = typer.Argument(
+        ...,
+        help="The ID of the application to uninstall (e.g., official/github-repo-manager).",
+    ),
+):
+    """Uninstalls an application and removes its assets."""
+    manager = AppManager()
+    asyncio.run(manager.uninstall(app_id))
+
+
+@flow_app.command("list")
+@handle_exceptions
+def flow_list():
+    """Lists all locally saved .flow.yaml workflows."""
+    manager = FlowManager()
+    manager.list_flows()
+
+
+@query_app.command("list")
+@handle_exceptions
+def query_list():
+    """Lists all locally saved .sql queries."""
+    manager = QueryManager()
+    manager.list_queries()
+
+
+@script_app.command("list")
+@handle_exceptions
+def script_list():
+    """Lists all locally saved .py scripts."""
+    manager = ScriptManager()
+    manager.list_scripts()
