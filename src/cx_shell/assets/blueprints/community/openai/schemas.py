@@ -48,7 +48,6 @@ class CreateChatCompletionPayload(BaseModel):
 
 class CreateChatCompletionParameters(BaseModel):
     """
-
     Defines the user-facing parameters for the `createChatCompletion` action.
     This model is used by the Pydantic "Pre-flight Check" for validation.
     It deliberately mirrors the payload for simplicity in this case.

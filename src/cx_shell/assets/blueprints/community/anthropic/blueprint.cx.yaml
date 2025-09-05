@@ -32,4 +32,4 @@ browse_config:
       description: "Creates a response from a Claude model for a given conversation."
       parameters_model: "schemas.CreateMessageParameters"
       payload_constructor:
-        _constructor: "schemas.CreateMessagePayload"
+        _model: "schemas.CreateMessagePayload"

@@ -140,8 +140,10 @@ class ConnectionManager:
             console.print(
                 f"\n[bold green]✅ Connection '{conn_name}' saved successfully![/bold green]"
             )
+            return conn_id  # <--- ADD THIS RETURN STATEMENT
         else:
             console.print("\n[bold yellow]Aborted.[/bold yellow]")
+            return None  # <--- ADD THIS RETURN STATEMENT
 
     def create_non_interactive(
         self, name: str, id: str, blueprint_id: str, details: Dict, secrets: Dict

@@ -18,7 +18,6 @@ browse_config:
   base_url_template: "https://generativelanguage.googleapis.com/v1beta/models"
 
   # Note: Google's API key is passed as a URL parameter, not a header.
-  # Therefore, we do not define an `auth_config` block here.
   # The key will be embedded directly in the `api_endpoint` templates below.
 
   action_templates:
@@ -29,7 +28,7 @@ browse_config:
       description: "Generates a response from a Gemini model."
       parameters_model: "schemas.GenerateContentParameters"
       payload_constructor:
-        _constructor: "schemas.GenerateContentPayload"
+        _model: "schemas.GenerateContentPayload"
 
     streamGenerateContent:
       http_method: "POST"
@@ -37,4 +36,4 @@ browse_config:
       description: "Generates a streaming response from a Gemini model."
       parameters_model: "schemas.GenerateContentParameters"
       payload_constructor:
-        _constructor: "schemas.GenerateContentPayload"
+        _model: "schemas.GenerateContentPayload"

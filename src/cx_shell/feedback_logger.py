@@ -15,13 +15,17 @@ class FeedbackLogger:
 
     def _log(self, event_type: str, data: dict):
         """Appends a structured, timestamped event to the feedback log file."""
-        log_entry = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "event_type": event_type,
-            "data": data,
-        }
-        with open(FEEDBACK_LOG_FILE, "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
+        try:
+            log_entry = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event_type": event_type,
+                "data": data,
+            }
+            with open(FEEDBACK_LOG_FILE, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            # Never let logging fail the main application
+            pass
 
     def log_user_correction(self, intent: str, agent_command: str, user_command: str):
         """
@@ -51,11 +55,16 @@ class FeedbackLogger:
             goal: The original, top-level user goal.
             final_flow_path: The path to the .flow.yaml file that solves the goal.
         """
+        try:
+            flow_content = final_flow_path.read_text()
+        except Exception:
+            flow_content = "[Could not read flow content]"
+
         self._log(
             "successful_pattern",
             {
                 "goal": goal,
                 "solution_asset_path": str(final_flow_path),
-                "solution_flow_content": final_flow_path.read_text(),
+                "solution_flow_content": flow_content,
             },
         )

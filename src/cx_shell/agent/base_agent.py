@@ -1,8 +1,12 @@
 from abc import ABC
+import yaml
 
 from ..interactive.session import SessionState
 from ..engine.connector.service import ConnectorService
 from ..data.agent_schemas import AgentConfig
+from ..engine.connector.config import CX_HOME
+
+AGENT_CONFIG_FILE = CX_HOME / "agents.config.yaml"
 
 
 class BaseSpecialistAgent(ABC):
@@ -20,10 +24,26 @@ class BaseSpecialistAgent(ABC):
         """
         self.state = state
         self.connector_service = connector_service
-        # In a real implementation, this would be loaded and cached from ~/.cx/agents.config.yaml
         self.agent_config: AgentConfig | None = self._load_agent_config()
 
     def _load_agent_config(self) -> AgentConfig | None:
-        """Placeholder for loading and validating agents.config.yaml."""
-        # TODO: Implement the actual YAML loading and Pydantic validation.
-        return None
+        """Loads and validates the agents.config.yaml file."""
+        if not AGENT_CONFIG_FILE.exists():
+            # If the user's config doesn't exist, we should try to use the
+            # default one bundled with the application.
+            from ..utils import get_asset_path
+
+            default_config_path = get_asset_path("configs/agents.default.yaml")
+            if not default_config_path.exists():
+                return None
+            config_file_to_load = default_config_path
+        else:
+            config_file_to_load = AGENT_CONFIG_FILE
+
+        try:
+            with open(config_file_to_load, "r") as f:
+                config_data = yaml.safe_load(f)
+            return AgentConfig.model_validate(config_data)
+        except Exception:
+            # Silently fail if the config is invalid, the agent will not be able to run.
+            return None

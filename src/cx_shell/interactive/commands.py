@@ -453,3 +453,37 @@ class AppCommand(Command):
     ) -> Any:
         # This will be handled directly by the CommandExecutor's dispatch logic
         raise NotImplementedError
+
+
+class AgentCommand(Command):
+    """Represents an agent invocation command, e.g., `agent 'do something'`."""
+
+    def __init__(self, goal: str):
+        self.goal = goal
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        raise NotImplementedError
+
+
+class ProcessCommand(Command):
+    """Represents a background process management command, e.g., `process list`."""
+
+    def __init__(self, subcommand: str, arg: str | None = None, follow: bool = False):
+        self.subcommand = subcommand
+        self.arg = arg
+        self.follow = follow
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        raise NotImplementedError

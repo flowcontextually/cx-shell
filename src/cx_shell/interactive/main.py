@@ -12,72 +12,84 @@ from .session import SessionState
 
 
 def start_repl():
-    """
-    Starts the main Read-Eval-Print-Loop (REPL) for the interactive shell.
-
-    This function sets up the entire interactive environment, including history,
-    state management, command completion, and key bindings. It contains the
-    main asynchronous loop that waits for user input and dispatches it to the
-    CommandExecutor.
-
-    Crucially, it is designed to handle session state replacement, allowing the
-    'load' command to completely swap out the active session.
-    """
+    """Starts the main Read-Eval-Print-Loop (REPL) for the interactive shell."""
     history_file = Path.home() / ".cx_history"
-
-    # Initialize the core components with the initial session state.
-    # These will be updated if a new session is loaded.
     state = SessionState()
     completer = CxCompleter(state)
     executor = CommandExecutor(state)
-
     bindings = KeyBindings()
-
-    # Create the PromptSession, which is the heart of the REPL interface.
     prompt_session = PromptSession(
         history=FileHistory(str(history_file)),
         completer=completer,
         complete_while_typing=True,
     )
 
-    # Define a custom key binding for the "Enter" key.
     @bindings.add(
         "enter",
-        # This filter ensures the binding only applies when the completion menu is visible.
         filter=Condition(
             lambda: prompt_session.default_buffer.complete_state is not None
         ),
     )
     def _(event):
-        """
-        When Enter is pressed while the completion menu is open, this function
-        applies the currently selected completion instead of submitting the command.
-        This provides a more intuitive IDE-like experience.
-        """
-        completion = event.current_buffer.complete_state.current_completion
-        if completion:
-            event.current_buffer.apply_completion(completion)
+        """Applies the current completion instead of submitting."""
+        event.current_buffer.complete_state.current_completion.apply_completion(
+            event.current_buffer
+        )
 
-    # Assign the completed key bindings to the session.
     prompt_session.key_bindings = bindings
 
     async def repl_main():
         nonlocal state, completer, executor
+
+        # --- FIX: Introduce a state variable for the next prompt's content ---
+        next_prompt_default = ""
+
         while state.is_running:
             try:
-                command_text = await prompt_session.prompt_async("cx> ")
+                # --- FIX: Use the 'default' argument ---
+                command_text = await prompt_session.prompt_async(
+                    "cx> ", default=next_prompt_default
+                )
+
+                # --- FIX: Immediately reset the default after use ---
+                next_prompt_default = ""
+
                 if not command_text or not command_text.strip():
                     continue
                 if command_text.strip().lower() in ["exit", "quit"]:
                     state.is_running = False
                     continue
 
-                # The execute method will now return either None or a new SessionState
+                if command_text.strip().startswith("//"):
+                    goal = command_text.strip().lstrip("//").strip()
+
+                    is_ready = await executor.orchestrator._ensure_agent_connection(
+                        "co_pilot"
+                    )
+
+                    if is_ready:
+                        with console.status("Translating intent to command..."):
+                            try:
+                                llm_response = await executor.orchestrator.tool_specialist.generate_command(
+                                    goal, [], is_translate=True
+                                )
+                                suggestion = llm_response.cx_command or ""
+
+                                # --- FIX: Instead of manipulating the buffer, set the state for the *next* loop iteration ---
+                                next_prompt_default = suggestion
+
+                            except Exception as e:
+                                console.print(
+                                    f"[bold red]Translate Error:[/bold red] {e}"
+                                )
+
+                    continue  # Loop back to render the new prompt with the default value
+
+                # Normal command execution path...
                 new_state = await executor.execute(command_text)
 
                 if isinstance(new_state, SessionState):
                     state = new_state
-                    # Re-point the executor and completer to the new state object
                     executor.state = state
                     completer.state = state
                     console.print("[bold yellow]Session restored.[/bold yellow]")
@@ -89,7 +101,5 @@ def start_repl():
                 print()
                 state.is_running = False
 
-    # Run the main asynchronous event loop.
     asyncio.run(repl_main())
-
     print("Exiting Contextual Shell. Goodbye!")

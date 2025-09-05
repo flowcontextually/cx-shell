@@ -156,8 +156,7 @@ class ProcessManager:
                 f"[dim]Tailing logs for [cyan]{process_id}[/cyan]... (Press Ctrl+C to stop)[/dim]"
             )
             try:
-                with open(process.log_path, "r") as log_file:
-                    subprocess.run(["tail", "-f", "-n", "+1", str(process.log_path)])
+                subprocess.run(["tail", "-f", "-n", "+1", str(process.log_path)])
             except KeyboardInterrupt:
                 CONSOLE.print()  # Newline after stopping
         else:

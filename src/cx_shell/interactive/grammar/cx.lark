@@ -22,6 +22,8 @@ single_command: dot_notation_kw_action | dot_notation_pos_action
               | connection_list | connection_create
               | open_command
               | app_list | app_install | app_uninstall | app_sync
+              | agent_command
+              | process_list | process_logs | process_stop
 
 formatter: formatter_option+
 formatter_option: output_option | columns_option | query_option
@@ -75,6 +77,12 @@ app_list: "app" "list"
 app_install: "app" "install" ARG
 app_uninstall: "app" "uninstall" ARG
 app_sync: "app" "sync"
+
+agent_command: "agent" STRING
+
+process_list: "process" "list"
+process_logs: "process" "logs" ARG ["--follow"]
+process_stop: "process" "stop" ARG
 
 // --- ARGUMENT & TERMINAL DEFINITIONS ---
 arguments: (kw_argument ("," kw_argument)*) // This is now non-optional where used

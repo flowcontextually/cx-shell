@@ -24,6 +24,8 @@ from ..management.script_manager import ScriptManager
 from ..management.connection_manager import ConnectionManager
 from ..management.open_manager import OpenManager
 from ..management.app_manager import AppManager
+from ..management.process_manager import ProcessManager
+from .agent_orchestrator import AgentOrchestrator
 from .commands import (
     Command,
     DotNotationCommand,
@@ -40,6 +42,8 @@ from .commands import (
     ConnectionCommand,
     OpenCommand,
     AppCommand,
+    AgentCommand,
+    ProcessCommand,
 )
 from .session import SessionState
 
@@ -207,6 +211,18 @@ class CommandTransformer(Transformer):
     def app_sync(self):
         return AppCommand("sync")
 
+    def agent_command(self, goal):
+        return AgentCommand(literal_eval(goal.value))
+
+    def process_list(self):
+        return ProcessCommand("list")
+
+    def process_logs(self, arg, follow=None):
+        return ProcessCommand("logs", arg.value, follow is not None)
+
+    def process_stop(self, arg):
+        return ProcessCommand("stop", arg.value)
+
     def arguments(self, *args):
         return dict(args)
 
@@ -248,6 +264,8 @@ class CommandExecutor:
         self.connection_manager = ConnectionManager()
         self.open_manager = OpenManager()
         self.app_manager = AppManager()
+        self.process_manager = ProcessManager()
+        self.orchestrator = AgentOrchestrator(state, self)
         self.builtin_commands = {
             "connect": self.execute_connect,
             "connections": self.execute_list_connections,
@@ -430,7 +448,20 @@ class CommandExecutor:
                 console.print(
                     f"[yellow]'{command.subcommand}' command is not yet fully implemented.[/yellow]"
                 )
-            return  # App commands don't return data to the pipeline
+            return
+        elif isinstance(command, AgentCommand):
+            await self.orchestrator.start_session(command.goal)
+            return None  # Orchestrator handles all output and state
+
+        elif isinstance(command, ProcessCommand):
+            if command.subcommand == "list":
+                self.process_manager.list_processes()
+            elif command.subcommand == "logs":
+                self.process_manager.get_logs(command.arg, command.follow)
+            # TODO: Implement stop logic
+            # elif command.subcommand == "stop":
+            #     self.process_manager.stop(command.arg)
+            return None
         elif isinstance(command, InspectCommand):
             return await command.execute(self.state, self.service, None)
         else:

@@ -33,4 +33,4 @@ browse_config:
       parameters_model: "schemas.CreateChatCompletionParameters"
       # Constructs the JSON body for the POST request from the provided parameters.
       payload_constructor:
-        _constructor: "schemas.CreateChatCompletionPayload"
+        _model: "schemas.CreateChatCompletionPayload"

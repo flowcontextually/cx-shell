@@ -63,16 +63,16 @@ class ConnectionResolver:
             )
             return
 
-        # --- THIS IS THE FIX ---
-        # The URL and the log message now match the correct, final architecture.
-        tag_name = f"{namespace}-{name}-{version}"
-        asset_url = f"https://github.com/{BLUEPRINTS_GITHUB_ORG}/{BLUEPRINTS_GITHUB_REPO}/releases/download/{tag_name}/{name}.zip"
+        # The version from the blueprint ID (e.g., "1.0.0") does not contain the 'v'.
+        # The release tag format is `<namespace>-<name>-v<version>`. We must add the 'v' here.
+        if not version.startswith("v"):
+            tag_version = f"v{version}"
+        else:
+            tag_version = version  # If it already has a 'v', don't double it.
 
-        logger.info(
-            "Blueprint not found locally. Downloading from release asset...",
-            url=asset_url,
-        )
-        # --- END FIX ---
+        tag_name = f"{namespace}-{name}-{tag_version}"
+        asset_name = f"{name}.zip"  # The asset is just the name.zip
+        asset_url = f"https://github.com/{BLUEPRINTS_GITHUB_ORG}/{BLUEPRINTS_GITHUB_REPO}/releases/download/{tag_name}/{asset_name}"
 
         try:
             with httpx.stream(

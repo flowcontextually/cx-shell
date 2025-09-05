@@ -1,9 +1,12 @@
 import sqlite3
+import importlib.util
+from pydantic import BaseModel
 # We will assume LanceDB and an embedding model are installed.
 # For now, these imports are placeholders to show intent.
 # import lancedb
 # from sentence_transformers import SentenceTransformer
 
+from pathlib import Path
 from typing import List, Dict, Any
 
 from ..engine.connector.config import CX_HOME, ConnectionResolver
@@ -76,7 +79,11 @@ class DynamicContextEngine:
         if beliefs.plan:
             context_parts.append("- The current plan is:")
             for i, step in enumerate(beliefs.plan):
-                status_icon = "✓" if step.status == "completed" else "…"
+                status_icon = (
+                    "✓"
+                    if step.status == "completed"
+                    else ("✗" if step.status == "failed" else "…")
+                )
                 context_parts.append(f"  {status_icon} {i + 1}. {step.step}")
 
         context_parts.append("\n## Available Connections")
@@ -85,6 +92,8 @@ class DynamicContextEngine:
         else:
             for alias in self.state.connections.keys():
                 context_parts.append(f"- `{alias}`: An active connection.")
+
+        # TODO: Add retrieved RAG results here
 
         return "\n".join(context_parts)
 
@@ -112,7 +121,6 @@ class DynamicContextEngine:
             action_templates = conn_model.catalog.browse_config.get(
                 "action_templates", {}
             )
-            schemas_path = conn_model.catalog.schemas_module_path
 
             tools = []
             for action_name, config in action_templates.items():
@@ -125,11 +133,18 @@ class DynamicContextEngine:
                 }
 
                 model_name_str = config.get("parameters_model")
-                if model_name_str and schemas_path:
+                if model_name_str and conn_model.catalog.schemas_module_path:
                     # Dynamically convert the Pydantic model to JSON Schema
-                    schema = self._get_schema_for_model(schemas_path, model_name_str)
+                    schema = self._get_schema_for_model(
+                        conn_model.catalog.schemas_module_path, model_name_str
+                    )
                     if schema:
-                        func_def["parameters"] = schema
+                        # Pydantic's model_json_schema includes a 'title' and 'description' we don't need at the top level.
+                        # We extract the core properties and required fields.
+                        func_def["parameters"]["properties"] = schema.get(
+                            "properties", {}
+                        )
+                        func_def["parameters"]["required"] = schema.get("required", [])
 
                 tools.append({"type": "function", "function": func_def})
             return tools
@@ -142,15 +157,14 @@ class DynamicContextEngine:
         self, schemas_py_file: str, model_path_str: str
     ) -> Dict[str, Any] | None:
         """Dynamically loads a Pydantic model and converts it to a JSON Schema."""
-        import importlib.util
-        from pydantic import BaseModel
-
         if not model_path_str.startswith("schemas."):
             return None
 
         class_name = model_path_str.split(".", 1)[1]
         try:
-            spec = importlib.util.spec_from_file_location("schemas", schemas_py_file)
+            spec = importlib.util.spec_from_file_location(
+                f"blueprint_schemas_{Path(schemas_py_file).stem}", schemas_py_file
+            )
             schemas_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(schemas_module)
 
@@ -158,6 +172,7 @@ class DynamicContextEngine:
             if issubclass(ParamModel, BaseModel):
                 # Use Pydantic's built-in JSON schema generation
                 return ParamModel.model_json_schema()
-        except (FileNotFoundError, AttributeError, ImportError):
-            pass  # Fail silently
+        except (FileNotFoundError, AttributeError, ImportError, Exception):
+            # Catch all exceptions during dynamic loading to ensure stability.
+            pass
         return None

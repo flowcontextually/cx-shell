@@ -10,6 +10,7 @@ import logging
 import typer
 from rich.console import Console
 from rich.traceback import Traceback
+import yaml
 
 # --- Local Application Imports ---
 from cx_shell.engine.connector.cli import app as connector_app
@@ -252,23 +253,39 @@ catalog:
 
     try:
         source_assets_dir = Path(__file__).parent / "assets"
-        github_blueprint_source = (
-            source_assets_dir / "blueprints" / "community" / "github" / "v0.1.0"
-        )
 
-        if github_blueprint_source.is_dir():
-            shutil.copytree(
-                github_blueprint_source, sample_blueprint_target_dir, dirs_exist_ok=True
+        # Define all bundled community blueprints by their directory name
+        bundled_blueprints = ["github", "openai", "anthropic", "google-gemini"]
+
+        for blueprint_name in bundled_blueprints:
+            blueprint_source_dir = (
+                source_assets_dir / "blueprints" / "community" / blueprint_name
             )
-            console.print(
-                f"✅ Copied sample blueprint to: [dim]{sample_blueprint_target_dir}[/dim]"
-            )
-        else:
-            console.print(
-                f"[bold yellow]Warning:[/bold yellow] Could not find bundled sample blueprint at [dim]{github_blueprint_source}[/dim]. `connect user:github` may fail."
-            )
+
+            if blueprint_source_dir.is_dir():
+                # Read the version directly from the manifest to be robust
+                manifest_path = blueprint_source_dir / "blueprint.cx.yaml"
+                with open(manifest_path, "r") as f:
+                    manifest_data = yaml.safe_load(f)
+                    version = manifest_data.get("version", "0.0.0")
+
+                blueprint_target_dir = (
+                    BLUEPRINTS_BASE_PATH / "community" / blueprint_name / version
+                )
+                blueprint_target_dir.mkdir(parents=True, exist_ok=True)
+
+                shutil.copytree(
+                    blueprint_source_dir, blueprint_target_dir, dirs_exist_ok=True
+                )
+                console.print(
+                    f"✅ Copied sample blueprint '{blueprint_name}' to: [dim]{blueprint_target_dir}[/dim]"
+                )
+            else:
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] Could not find bundled blueprint source at [dim]{blueprint_source_dir}[/dim]."
+                )
     except Exception as e:
-        console.print(f"[bold red]Error copying sample blueprint:[/bold red] {e}")
+        console.print(f"[bold red]Error copying sample blueprints:[/bold red] {e}")
 
     console.print("\n[bold green]Initialization complete![/bold green]")
     console.print("Run `cx` to start the interactive shell and try the new tutorial:")
