@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cx-shell"
-version = "0.3.0"
+version = "0.4.0"
 description = "The Contextual Shell: a declarative, multi-stage automation platform for modern data and operations teams."
 authors = [
     { name = "David Wanjala", email = "dpwanjala@example.com" },
@@ -39,6 +39,7 @@ dependencies = [
     "networkx>=3.0",
     "prompt-toolkit>=3.0.0",
     "lark>=1.1.9",
+    "jsonpatch>=1.33",
 ]
 
 # --- Optional Dependencies (Merged) ---

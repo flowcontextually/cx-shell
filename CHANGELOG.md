@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2025-09-04
+
+### Added
+
+- **Agentic Shell Foundation:** Introduced the core architecture for AI assistance.
+- **Translate Feature (`// <prompt>`):** Added a "fast path" co-pilot for instantaneous, inline command suggestions.
+- **On-Demand Onboarding:** The Translate feature now automatically triggers an interactive wizard to configure required LLM provider connections if one is not active.
+- **Provider-Agnostic Agent Backend:** The agent's core is now powered by the `cx` platform's own Blueprint system, making it extensible to any LLM provider.
+- **Bundled LLM Blueprints:** `cx init` now includes pre-packaged `community` blueprints for OpenAI, Anthropic, and Google Gemini.
+- **Asynchronous Process Management:** Added `cx process` command group to the CLI for managing long-running background tasks.
 
 ## [0.3.0] - 2025-09-04
 
