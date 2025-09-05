@@ -17,7 +17,7 @@ from cx_shell.engine.connector.cli import app as connector_app
 from cx_shell.engine.transformer.cli import app as transformer_app
 from cx_shell.engine.connector.service import ConnectorService
 from cx_shell.interactive.main import start_repl
-from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
+from cx_shell.engine.connector.config import BLUEPRINTS_BASE_PATH
 from cx_shell.management.connection_manager import ConnectionManager
 from cx_shell.management.app_manager import AppManager
 from cx_shell.management.flow_manager import FlowManager
@@ -160,130 +160,72 @@ app.add_typer(connection_app, name="connection")
 def init():
     """
     Initializes the cx shell environment in your home directory (~/.cx).
-
-    Creates the necessary configuration and blueprint directories, and populates
-    them with a sample project to get you started.
     """
     console = Console()
+    from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
 
-    console.print(
-        "[bold green]Initializing Flow Contextually environment...[/bold green]"
-    )
+    console.print("[bold green]Initializing Contextually environment...[/bold green]")
 
+    # --- Define and create core directories ---
     connections_dir = CX_HOME / "connections"
-    secrets_dir = CX_HOME / "secrets"
-    user_blueprints_dir = BLUEPRINTS_BASE_PATH / "user"
-    flows_dir = CX_HOME / "flows"
-    queries_dir = CX_HOME / "queries"
-    scripts_dir = CX_HOME / "scripts"
-    sample_blueprint_target_dir = (
-        BLUEPRINTS_BASE_PATH / "community" / "github" / "v0.1.0"
-    )
-
     dirs_to_create = [
         connections_dir,
-        secrets_dir,
-        user_blueprints_dir,
-        flows_dir,
-        queries_dir,
-        scripts_dir,
-        sample_blueprint_target_dir,
+        CX_HOME / "secrets",
+        BLUEPRINTS_BASE_PATH / "user",
+        CX_HOME / "flows",
+        CX_HOME / "queries",
+        CX_HOME / "scripts",
     ]
-
     for d in dirs_to_create:
         d.mkdir(parents=True, exist_ok=True)
         console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
 
-    github_conn = """
-name: "GitHub Public API"
-id: "user:github"
-api_catalog_id: "community/github@v0.1.0"
-auth_method_type: "none"
-"""
+    # --- Copy default connections from assets ---
+    try:
+        source_connections_dir = Path(__file__).parent / "assets" / "connections"
+        if source_connections_dir.is_dir():
+            for conn_asset in source_connections_dir.glob("*.conn.yaml"):
+                target_path = connections_dir / conn_asset.name
+                if not target_path.exists():
+                    shutil.copy(conn_asset, target_path)
+                    console.print(
+                        f"✅ Created sample connection: [dim]{target_path}[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"☑️  Connection already exists, skipping: [dim]{target_path}[/dim]"
+                    )
+    except Exception as e:
+        console.print(f"[bold red]Error copying sample connections:[/bold red] {e}")
 
-    fs_generic_conn = """
-name: "Local Filesystem (Generic Root)"
-id: "user:fs_generic"
-api_catalog_id: "catalog:internal-filesystem"
-auth_method_type: "none"
-details:
-  base_path: "/"
-catalog:
-  id: "catalog:internal-filesystem"
-  name: "Local Filesystem"
-  connector_provider_key: "fs-declarative"
-"""
-
-    smart_fetcher_conn = """
-name: "System Smart Fetcher"
-id: "user:system_smart_fetcher"
-api_catalog_id: "catalog:internal-fetcher"
-auth_method_type: "none"
-catalog:
-  id: "catalog:internal-fetcher"
-  name: "Smart Fetcher"
-  connector_provider_key: "internal-smart_fetcher"
-"""
-
-    python_sandbox_conn = """
-name: "System Python Sandbox"
-id: "user:system_python_sandbox"
-api_catalog_id: "catalog:internal-python"
-auth_method_type: "none"
-details: {}
-catalog:
-  id: "catalog:internal-python"
-  name: "Python Sandbox Runtime"
-  connector_provider_key: "python-sandboxed"
-"""
-
-    files_to_write = {
-        connections_dir / "fs_generic.conn.yaml": fs_generic_conn,
-        connections_dir / "github.conn.yaml": github_conn,
-        connections_dir / "system_smart_fetcher.conn.yaml": smart_fetcher_conn,
-        connections_dir / "system_python_sandbox.conn.yaml": python_sandbox_conn,
-    }
-
-    for path, content in files_to_write.items():
-        if not path.exists():
-            path.write_text(content.strip())
-            console.print(f"✅ Created sample connection: [dim]{path}[/dim]")
-        else:
-            console.print(f"☑️  File already exists, skipping: [dim]{path}[/dim]")
-
+    # --- Copy all bundled community blueprints ---
     try:
         source_assets_dir = Path(__file__).parent / "assets"
+        bundled_blueprints_root = source_assets_dir / "blueprints" / "community"
 
-        # Define all bundled community blueprints by their directory name
-        bundled_blueprints = ["github", "openai", "anthropic", "google-gemini"]
+        if bundled_blueprints_root.is_dir():
+            for blueprint_source_dir in bundled_blueprints_root.iterdir():
+                if blueprint_source_dir.is_dir():
+                    blueprint_name = blueprint_source_dir.name
+                    manifest_path = blueprint_source_dir / "blueprint.cx.yaml"
+                    if not manifest_path.is_file():
+                        continue
 
-        for blueprint_name in bundled_blueprints:
-            blueprint_source_dir = (
-                source_assets_dir / "blueprints" / "community" / blueprint_name
-            )
+                    with open(manifest_path, "r") as f:
+                        manifest_data = yaml.safe_load(f)
+                        version = manifest_data.get("version", "0.0.0")
 
-            if blueprint_source_dir.is_dir():
-                # Read the version directly from the manifest to be robust
-                manifest_path = blueprint_source_dir / "blueprint.cx.yaml"
-                with open(manifest_path, "r") as f:
-                    manifest_data = yaml.safe_load(f)
-                    version = manifest_data.get("version", "0.0.0")
+                    blueprint_target_dir = (
+                        BLUEPRINTS_BASE_PATH / "community" / blueprint_name / version
+                    )
 
-                blueprint_target_dir = (
-                    BLUEPRINTS_BASE_PATH / "community" / blueprint_name / version
-                )
-                blueprint_target_dir.mkdir(parents=True, exist_ok=True)
+                    if blueprint_target_dir.exists():
+                        shutil.rmtree(blueprint_target_dir)
 
-                shutil.copytree(
-                    blueprint_source_dir, blueprint_target_dir, dirs_exist_ok=True
-                )
-                console.print(
-                    f"✅ Copied sample blueprint '{blueprint_name}' to: [dim]{blueprint_target_dir}[/dim]"
-                )
-            else:
-                console.print(
-                    f"[bold yellow]Warning:[/bold yellow] Could not find bundled blueprint source at [dim]{blueprint_source_dir}[/dim]."
-                )
+                    shutil.copytree(blueprint_source_dir, blueprint_target_dir)
+                    console.print(
+                        f"✅ Copied sample blueprint '{blueprint_name}' to: [dim]{blueprint_target_dir}[/dim]"
+                    )
     except Exception as e:
         console.print(f"[bold red]Error copying sample blueprints:[/bold red] {e}")
 
@@ -300,7 +242,9 @@ def compile(
         ..., help="The path or URL to the OpenAPI/Swagger specification file."
     ),
     output_dir: Path = typer.Option(
-        BLUEPRINTS_BASE_PATH,
+        lambda: __import__(
+            "cx_shell.engine.connector.config"
+        ).engine.connector.config.BLUEPRINTS_BASE_PATH,
         "--output",
         "-o",
         help=f"The root directory to write the blueprint to. [default: {BLUEPRINTS_BASE_PATH}]",
