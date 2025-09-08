@@ -490,7 +490,7 @@ class CommandExecutor:
         }
         # Do not create the orchestrator immediately.
         self._orchestrator: Optional[AgentOrchestrator] = None
-        grammar_path = get_asset_path("../interactive/grammar/cx.lark")
+        grammar_path = get_asset_path("interactive/grammar/cx.lark")
         with open(grammar_path, "r", encoding="utf-8") as f:
             self.parser = Lark(f.read(), start="start", parser="lalr")
         self.transformer = CommandTransformer()
