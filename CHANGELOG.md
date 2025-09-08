@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-09-08
+
+### Added
+
+- **Collaborative Agent (CARE Engine):** Introduced the full, multi-step agentic reasoning loop with the `agent <goal>` command.
+- **Hierarchical Agent Architecture:** Implemented the full Composite Agent Reasoning Engine (CARE) with three specialist agents: Planner, ToolSpecialist, and Analyst.
+- **Human-in-the-Loop Workflow:** The agent now presents its plan, generates commands, and requires user confirmation before execution for safety and transparency.
+- **Multi-Gate Validation:** Agent-generated commands are now validated through a three-gate system (plan sanity, static syntax check, and dry-run simulation) to ensure reliability.
+- **Self-Correcting LLM Calls:** The `instructor` library now automatically retries LLM calls with validation feedback, improving the reliability of structured data generation.
+
+### Fixed
+
+- **Agent Command Generation:** Completely resolved all issues where agents would generate syntactically invalid commands (e.g., with a `cx` prefix) by providing better-constrained prompts and examples.
+- **Analyst Reliability:** Fixed `ValidationError` crashes in the Analyst agent by providing few-shot examples in the prompt, ensuring it always produces a valid `belief_update`.
+- **Async Deadlock:** Resolved a critical hang/deadlock in the interactive shell that occurred when agent features tried to perform synchronous file I/O.
+- **Command Execution:** Fixed `TypeError` and `AttributeError` bugs in the `CommandExecutor` that prevented agent-generated commands from being executed.
+
 ## [0.4.0] - 2025-09-04
 
 ### Added

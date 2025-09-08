@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from ....data.agent_schemas import DryRunResult
 
 import structlog
 
@@ -60,4 +61,24 @@ class BaseConnectorStrategy(ABC):
         """
         raise NotImplementedError(
             f"The '{self.strategy_key}' strategy does not support 'run_declarative_action'."
+        )
+
+    @abstractmethod
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """
+        Simulates the execution of an action to predict its outcome without
+        making state-altering or expensive calls.
+
+        Returns:
+            A DryRunResult object summarizing the predicted outcome.
+        """
+        # Default implementation for strategies that don't support dry run yet.
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run not implemented for this action type. Assuming success.",
         )

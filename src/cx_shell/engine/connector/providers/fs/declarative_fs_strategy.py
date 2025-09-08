@@ -13,6 +13,7 @@ import tiktoken
 from cx_core_schemas.connection import Connection
 from cx_core_schemas.vfs import VfsFileContentResponse, VfsNodeMetadata
 from ...utils import is_binary_string
+from .....data.agent_schemas import DryRunResult
 from ..base import BaseConnectorStrategy
 
 
@@ -406,3 +407,15 @@ class DeclarativeFilesystemStrategy(BaseConnectorStrategy):
         except Exception as e:
             log.error("write_files.failed", error=str(e), exc_info=True)
             raise IOError(f"Failed to write one or more files: {e}") from e
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """This strategy's actions are validated at execution time. The dry run passes by default."""
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful by default for this strategy.",
+        )

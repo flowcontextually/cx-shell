@@ -1,11 +1,15 @@
 # [REPLACE] /home/dpwanjala/repositories/connector-logic/src/connector_logic/providers/rest/webhook_strategy.py
 
 import logging
-from typing import Dict, Any, List
+from typing import TYPE_CHECKING, Dict, Any, List
 from contextlib import asynccontextmanager
 import httpx
 from ..base import BaseConnectorStrategy
 from cx_core_schemas.vfs import VfsFileContentResponse
+from .....data.agent_schemas import DryRunResult
+
+if TYPE_CHECKING:
+    from cx_core_schemas.connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +79,19 @@ class WebhookStrategy(BaseConnectorStrategy):
     ) -> VfsFileContentResponse:
         """Webhooks are write-only endpoints; they cannot be 'read' or 'opened'."""
         raise NotImplementedError("Cannot 'get_content' from a write-only webhook.")
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        if "webhook_url" not in secrets:
+            return DryRunResult(
+                indicates_failure=True,
+                message="Dry run failed: Secret 'webhook_url' is missing.",
+            )
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful: Webhook URL is present.",
+        )

@@ -1,133 +1,109 @@
-# /home/dpwanjala/repositories/cx-shell/src/cx_shell/agent/tool_specialist_agent.py
-
 import json
 from typing import List, Dict, Any
-from pydantic import TypeAdapter, ValidationError
+
 import structlog
 
 from .base_agent import BaseSpecialistAgent
-from ..data.agent_schemas import LLMResponse
-from cx_core_schemas.connector_script import (
-    ConnectorScript,
-    ConnectorStep,
-    RunDeclarativeAction,
-)
+from ..data.agent_schemas import LLMResponse, AgentBeliefs
 
-logger = structlog.get_logger(__name__)
 
 TRANSLATE_SYSTEM_PROMPT = """
-You are an expert `cx` shell command-line co-pilot. Your sole purpose is to translate a user's natural language goal into a single, best-effort `cx` command.
-The user's prompt will be their goal.
-You will be provided with a JSON list of available tool functions.
-Analyze the user's goal and the available tools, and construct the single most appropriate `cx` command to achieve it.
-Your output MUST be only the single line of `cx` shell command text. Do not add any explanation, formatting, or backticks.
+You are an expert `cx` shell command translator. Your sole purpose is to translate a user's single-line goal into the single best `cx` command.
+You will be provided with the user's goal and a summary of available tools.
+Your output MUST be a valid `LLMResponse` JSON object containing a list with ONE `CommandOption`. The `reasoning` should be "Translate suggestion".
+Do NOT include the leading 'cx ' in your command. For example, generate `connection list`, not `cx connection list`.
 """
 
+
 TOOL_SPECIALIST_SYSTEM_PROMPT = """
-You are the Tool Specialist Agent within the `cx` shell's CARE (Composite Agent Reasoning Engine).
-Your role is to act as a precise, deterministic, and safe tool-using component.
-You will be given a single, high-level task from the Planner Agent.
-You will also be provided with a JSON list of available tool functions and their schemas that you can use to accomplish this task.
-Your responsibilities are:
-1.  **Analyze the Task:** Understand the goal of the current step.
-2.  **Select the Best Tool:** Choose the single most appropriate tool or pipeline of tools from the provided list.
-3.  **Construct the Command:** Formulate a syntactically correct `cx` shell command to execute the chosen tool with the correct parameters. You can use pipelining (`|`) and session variables (`=`) if it is more efficient.
-4.  **Reason:** Briefly explain your choice of command in the `reasoning` field.
-Your output MUST be a single, valid JSON object that conforms to the following structure:
+You are the Tool Specialist Agent for the `cx` shell. You are a precise and efficient tool user.
+You will be given a "Mission Briefing" containing the user's overall goal, the full strategic plan, any discovered facts, and a list of available tools.
+Your task is to generate a list of up to 3 potential `cx` commands that will accomplish the **single active plan step**.
+
+**CRITICAL CONSTRAINTS:**
+
+1.  **FOCUS:** Your response must *only* address the single plan step marked `==> ACTIVE STEP:`. Do not try to solve other steps.
+2.  **USE CONTEXT:** You *must* use information from the "Overall Goal" and "Discovered Facts" sections to find the necessary arguments for your command (like URLs, IDs, or variable names).
+3.  **SYNTAX - NO `cx` PREFIX:** The commands you generate **must not** start with `cx`. For example, generate `connection list`, not `cx connection list`. The `cx` is implied.
+4.  **SYNTAX - PERFECTION:** The commands you generate must be syntactically perfect according to the shell's grammar. Pay close attention to whether a command uses keywords (e.g., `flow run my-flow`) or dot-notation (e.g., `gh.getUser(...)`).
+5.  **OUTPUT FORMAT:** Your entire output **MUST** be ONLY a single, valid JSON object that conforms to the `LLMResponse` schema. Do not add any commentary, conversational text, or markdown formatting like ```json.
+
+**Example of a Perfect Response:**
 {
-  "reasoning": "A brief explanation of your thought process and command choice.",
-  "cx_command": "The complete, single-line `cx` command to be executed."
+  "command_options": [
+    {
+      "cx_command": "compile --spec-url https://api.spotify.com/openapi.json --name spotify --version 1.0.0",
+      "reasoning": "The active step is to compile the blueprint. I have extracted the URL from the user's original goal and am using the standard `compile` command with the required named arguments.",
+      "confidence": 0.98
+    }
+  ]
 }
-Do not output anything other than this JSON object.
 """
+
+logger = structlog.get_logger(__name__)
 
 
 class ToolSpecialistAgent(BaseSpecialistAgent):
     """
-    Translates a single, concrete plan step into an executable `cx` command.
+    Translates a plan step into one or more executable `cx` command options.
     Also serves the stateless "Translate" (`//`) functionality.
     """
 
+    def _format_mission_briefing(
+        self, beliefs: AgentBeliefs, active_step_index: int
+    ) -> str:
+        # This method is correct.
+        briefing = [
+            "--- MISSION BRIEFING START ---",
+            f"**Overall Goal:** {beliefs.original_goal}\n",
+            "**Full Plan:**",
+        ]
+        for i, step in enumerate(beliefs.plan):
+            prefix = (
+                "==> **ACTIVE STEP:**" if i == active_step_index else f"    {i + 1}."
+            )
+            briefing.append(f"{prefix} [{step.status}] {step.step}")
+
+        if beliefs.discovered_facts:
+            briefing.append("\n**Discovered Facts:**")
+            briefing.append(json.dumps(beliefs.discovered_facts, indent=2))
+
+        briefing.append("--- MISSION BRIEFING END ---")
+        return "\n".join(briefing)
+
     async def generate_command(
         self,
-        step_goal: str,
+        beliefs: AgentBeliefs,
+        active_step_index: int,
         tactical_context: List[Dict[str, Any]],
         is_translate: bool = False,
     ) -> LLMResponse:
         """
-        Takes a single plan step and tool schemas, and returns a command.
+        Takes the full belief state and tool schemas, and returns command options.
         """
-        if not self.agent_config:
-            raise RuntimeError(
-                "Agent configuration is missing or invalid. Please run `cx init` or check `~/.cx/agents.config.yaml`."
-            )
+        ### DIAGNOSTIC LOG 3 ###
+        # This log proves that the NEW version of THIS method definition is being executed.
+        logger.critical("TOOL_SPECIALIST: Running V2 of generate_command definition.")
 
-        profile = self.agent_config.profiles[self.agent_config.default_profile]
-        config = profile.co_pilot if is_translate else profile.tool_specialist
-
-        system_prompt = (
-            TRANSLATE_SYSTEM_PROMPT if is_translate else TOOL_SPECIALIST_SYSTEM_PROMPT
-        )
-
-        tools_str = json.dumps(tactical_context, indent=2)
-        user_prompt = f"## Goal\n{step_goal}\n\n## Available Tools\n{tools_str}"
+        if is_translate:
+            role_name = "co_pilot"
+            system_prompt = TRANSLATE_SYSTEM_PROMPT
+            user_prompt = f"## User Goal\n{beliefs.original_goal}\n\n## Available Tools\n{json.dumps(tactical_context, indent=2)}"
+        else:
+            role_name = "tool_specialist"
+            system_prompt = TOOL_SPECIALIST_SYSTEM_PROMPT
+            mission_briefing = self._format_mission_briefing(beliefs, active_step_index)
+            user_prompt = f"{mission_briefing}\n\n## Available Tools\n{json.dumps(tactical_context, indent=2)}"
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        script = ConnectorScript(
-            name="Invoke Tool Specialist Agent",
-            steps=[
-                ConnectorStep(
-                    id="call_tool_specialist_llm",
-                    name="Call LLM",
-                    connection_source=self.state.connections[config.connection_alias],
-                    run=RunDeclarativeAction(
-                        action="run_declarative_action",
-                        template_key=config.action,
-                        context={"messages": messages, **config.parameters},
-                    ),
-                )
-            ],
-        )
-
-        result = await self.connector_service.engine.run_script_model(script)
-
-        llm_response_data = result.get("Call LLM", {})
-        # logger.info("Raw response from LLM provider", response_data=llm_response_data)
-
-        response_content = ""
         try:
-            response_content = (
-                llm_response_data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
+            response = await self.llm_client.create_structured_response(
+                role_name=role_name, response_model=LLMResponse, messages=messages
             )
-        except (IndexError, AttributeError) as e:
-            logger.error(
-                "Failed to parse LLM response structure",
-                error=str(e),
-                raw_response=llm_response_data,
-            )
-
-        if is_translate:
-            return LLMResponse(
-                reasoning="Translate suggestion", cx_command=response_content.strip()
-            )
-
-        try:
-            response_json = json.loads(response_content)
-            adapter = TypeAdapter(LLMResponse)
-            return adapter.validate_python(response_json)
-        except (json.JSONDecodeError, ValidationError) as e:
-            logger.error(
-                "LLM failed to produce valid JSON for agent response",
-                error=str(e),
-                raw_content=response_content,
-            )
-            return LLMResponse(
-                reasoning=f"LLM failed to produce a valid JSON response. Error: {e}. Raw content: {response_content}",
-                cx_command=None,
-            )
+            return response
+        except Exception:
+            return LLMResponse(command_options=[])

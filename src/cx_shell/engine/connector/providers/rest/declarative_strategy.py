@@ -10,6 +10,9 @@ import structlog
 from jinja2 import Environment, TemplateError
 import importlib.util
 
+import yaml
+from .....data.agent_schemas import DryRunResult
+
 
 # --- Conditional Imports for Type Hinting ---
 if TYPE_CHECKING:
@@ -403,53 +406,84 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         secrets: Dict[str, Any],
         client: httpx.AsyncClient | None = None,
     ) -> "VfsFileContentResponse":
-        """Fetches content, intelligently handling both relative paths and absolute URLs."""
-        # This is the path provided by the user/script, e.g., ['/users/123'] or ['https://...']
+        """
+        Fetches content from a URL or API endpoint, intelligently handling JSON, YAML,
+        and plain text based on the response's Content-Type header.
+        """
         path_segment = path_parts[0] if path_parts else ""
-
         log = logger.bind(
             connection_id=connection.id, vfs_path=f"/{path_segment.lstrip('/')}"
         )
 
-        # --- THIS IS THE FIX ---
         is_absolute_url = path_segment.lower().startswith(("http://", "https://"))
 
         if is_absolute_url:
-            # If the path is a full URL, use it directly and ignore the base_url.
             endpoint = path_segment
-            # Use a generic httpx client for this one-off request.
-            # We don't use the connection's configured client because the host is different.
-            active_client = httpx.AsyncClient(timeout=30.0)
+            # Use a generic httpx client for one-off URL fetches.
+            active_client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
             log.info("get_content.absolute_url_detected", url=endpoint)
         else:
-            # If it's a relative path, use the standard logic with the connection's client.
+            # Use the connection's configured client for relative API paths.
             browse_config = (
                 connection.catalog.browse_config if connection.catalog else None
             )
             if not browse_config:
-                raise FileNotFoundError("Browse configuration is missing.")
+                raise FileNotFoundError(
+                    "Browse configuration is missing for this connection."
+                )
             render_context = {"details": connection.details, "secrets": secrets}
             endpoint, _ = self._determine_content_endpoint(
                 path_parts, browse_config, render_context
             )
-            # This is a placeholder for the real client manager logic
             active_client = client or self.get_client(connection, secrets)
-        # --- END FIX ---
 
         log = log.bind(api_endpoint=endpoint)
         log.info("get_content.calling_api")
 
         try:
-            # The 'async with' ensures the client is closed, whether it's a new one
-            # for an absolute URL or a managed one from the connection.
             async with active_client as managed_client:
                 response = await managed_client.get(endpoint)
                 log.info("get_content.api_response", status_code=response.status_code)
                 response.raise_for_status()
-                content_data = response.json()
 
-            # The rest of the logic for creating the VfsFileContentResponse is the same
-            content_as_string = json.dumps(safe_serialize(content_data), indent=2)
+                # --- Robust Content-Type Handling ---
+                content_type = response.headers.get("content-type", "").lower()
+                content_data: Any = None
+                content_as_string: str = ""
+                mime_type: str = content_type or "application/octet-stream"
+
+                if "application/json" in content_type:
+                    content_data = response.json()
+                    mime_type = "application/json"
+                elif (
+                    "yaml" in content_type
+                    or "text/plain" in content_type
+                    or not response.content
+                ):
+                    # For YAML, plain text, or empty responses, start with the text.
+                    content_data = response.text
+                    try:
+                        # Attempt to parse as YAML to get a structured object if possible
+                        parsed_yaml = yaml.safe_load(response.text)
+                        if isinstance(parsed_yaml, (dict, list)):
+                            content_data = parsed_yaml
+                        mime_type = "application/yaml"
+                    except (yaml.YAMLError, TypeError):
+                        # If it's not valid YAML, it's just plain text.
+                        mime_type = "text/plain"
+                else:
+                    # For all other content types, treat as raw text to avoid errors.
+                    content_data = response.text
+
+                # For the VFS response, `content` must be a string.
+                # If we successfully parsed a structured object (JSON/YAML),
+                # we re-serialize it into a canonical JSON string for downstream steps.
+                if isinstance(content_data, (dict, list)):
+                    content_as_string = json.dumps(safe_serialize(content_data))
+                else:
+                    content_as_string = str(content_data)
+                # --- End Content-Type Handling ---
+
             now = datetime.now(timezone.utc)
             etag = response.headers.get("etag", f'"{hash(content_as_string)}"')
             metadata = VfsNodeMetadata(
@@ -462,9 +496,9 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
             return VfsFileContentResponse(
                 path=full_vfs_path,
                 content=content_as_string,
-                mime_type="application/json",
+                mime_type=mime_type,
                 last_modified=now,
-                size=len(content_as_string.encode("utf-8")),
+                size=len(response.content),  # Use raw content length for accurate size
                 metadata=metadata,
             )
         except httpx.HTTPStatusError as e:
@@ -533,13 +567,17 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
         action_params: Dict[str, Any],
         script_input: Dict[str, Any],
         debug_mode: bool = False,
+        dry_run: bool = False,  # The new dry_run parameter
     ) -> Dict[str, Any]:
         """
-        Executes a declarative action, using the Pydantic schema to validate a
-        structured context provided by the user, with special handling for file directives.
+        Executes a declarative action, using Pydantic schemas for robust validation
+        and payload construction. If dry_run is True, it performs all validation but
+        skips the final API call, returning a success or failure simulation.
         """
         template_key = action_params.get("template_key")
-        log = logger.bind(connection_id=connection.id, template_key=template_key)
+        log = logger.bind(
+            connection_id=connection.id, template_key=template_key, dry_run=dry_run
+        )
 
         if not connection.catalog or not connection.catalog.browse_config:
             raise ValueError(
@@ -559,52 +597,90 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
             "context": user_context,
         }
 
+        # Step 1: Render the user-provided context to resolve any initial Jinja variables.
+        rendered_context = self._render_template(user_context, full_render_context)
+
+        # Step 2: Process special file-handling directives like `read_file:` or `b64encode_file:`.
+        processed_context = self._process_directives(rendered_context)
+
+        # Step 3: Validate the processed context against the action's Pydantic `parameters_model`.
+        # This is our "pre-flight check" for the user-facing arguments.
+        validated_params = processed_context
+        if "parameters_model" in template_config:
+            try:
+                ParamModel = self._load_pydantic_model(
+                    template_config["parameters_model"], connection.catalog
+                )
+                adapter = TypeAdapter(ParamModel)
+                validated_model = adapter.validate_python(processed_context)
+                validated_params = validated_model.model_dump(by_alias=True)
+                log.info(
+                    "Successfully validated parameters.",
+                    model=template_config["parameters_model"],
+                )
+            except (ImportError, ValidationError) as e:
+                log.error(
+                    "Parameter validation failed.",
+                    model=template_config["parameters_model"],
+                    error=str(e),
+                )
+                raise ValueError(
+                    f"Invalid parameters for action '{template_key}': {e}"
+                ) from e
+
+        # Step 4: Re-create the render context with the now-validated and aliased parameters.
+        # This allows templates in `api_endpoint` to use the final, correct field names.
+        full_render_context["context"] = validated_params
+
         api_endpoint = self._render_template(
             template_config.get("api_endpoint", ""), full_render_context
         )
         http_method = template_config.get("http_method", "GET").upper()
 
-        async with self.get_client(connection, secrets) as client:
-            request_kwargs = {}
-            if (
-                http_method in ["POST", "PUT", "PATCH"]
-                and "payload_constructor" in template_config
-            ):
-                constructor_config = template_config["payload_constructor"]
-                if "_model" not in constructor_config:
-                    raise ValueError(
-                        "payload_constructor in blueprint must contain a '_model' key."
-                    )
-
-                model_name = constructor_config["_model"]
-                PayloadModel = self._load_pydantic_model(model_name, connection.catalog)
-
-                # 1. Render the user's structured context to resolve Jinja variables.
-                rendered_context = self._render_template(
-                    user_context, full_render_context
+        # Step 5: Construct the final request payload, if applicable.
+        request_kwargs = {}
+        if (
+            http_method in ["POST", "PUT", "PATCH"]
+            and "payload_constructor" in template_config
+        ):
+            constructor_config = template_config["payload_constructor"]
+            model_name = constructor_config.get("_model")
+            if not model_name:
+                raise ValueError(
+                    "payload_constructor in blueprint must contain a '_model' key."
                 )
 
-                # 2. Recursively process special file-handling directives.
-                processed_context = self._process_directives(rendered_context)
+            PayloadModel = self._load_pydantic_model(model_name, connection.catalog)
 
-                # 3. Validate the final, processed data against the target Pydantic model.
-                try:
-                    adapter = TypeAdapter(PayloadModel)
-                    validated_model = adapter.validate_python(processed_context)
-                    request_kwargs["json"] = validated_model.model_dump(
-                        by_alias=True, exclude_unset=True
-                    )
-                    log.info("Successfully validated API payload.", model=model_name)
-                except ValidationError as e:
-                    log.error(
-                        "Payload validation failed against Pydantic model.",
-                        model=model_name,
-                        errors=str(e),
-                    )
-                    raise ValueError(
-                        f"Failed to build valid payload for {model_name}: {e}"
-                    ) from e
+            try:
+                # Use the validated parameters as the source data for the payload.
+                # The Pydantic model itself will select the fields it needs.
+                adapter = TypeAdapter(PayloadModel)
+                validated_payload = adapter.validate_python(validated_params)
+                request_kwargs["json"] = validated_payload.model_dump(
+                    by_alias=True, exclude_unset=True
+                )
+                log.info(
+                    "Successfully constructed and validated API payload.",
+                    model=model_name,
+                )
+            except ValidationError as e:
+                log.error("Payload validation failed.", model=model_name, errors=str(e))
+                raise ValueError(
+                    f"Failed to build valid payload for {model_name}: {e}"
+                ) from e
 
+        # --- FINAL EXECUTION GATE ---
+        if dry_run:
+            # If we reached this point in a dry run, all validations have passed.
+            log.info("Dry run successful. API call was not sent.")
+            return {
+                "dry_run_status": "success",
+                "message": f"Would make a {http_method} request to {api_endpoint} with a valid payload.",
+            }
+
+        # This is the real execution path.
+        async with self.get_client(connection, secrets) as client:
             log.info(
                 "Executing declarative action API call.",
                 endpoint=api_endpoint,
@@ -616,4 +692,31 @@ class DeclarativeRestStrategy(BaseConnectorStrategy):
                 response.json()
                 if response.content
                 else {"status_code": response.status_code, "content": None}
+            )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """Simulates a declarative action by validating the entire payload construction."""
+        try:
+            # Re-use the main logic but without the final API call.
+            # This is a perfect example of a dry run.
+            _ = await self.run_declarative_action(
+                connection,
+                secrets,
+                action_params,
+                {},
+                dry_run=True,  # Pass a dry_run flag
+            )
+            return DryRunResult(
+                indicates_failure=False,
+                message=f"Action '{action_params.get('template_key')}' would execute successfully.",
+            )
+        except Exception as e:
+            return DryRunResult(
+                indicates_failure=True,
+                message=f"Action would fail validation. Error: {e}",
             )

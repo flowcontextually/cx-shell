@@ -1,15 +1,17 @@
-# [REPLACE] /home/dpwanjala/repositories/connector-logic/src/connector_logic/providers/rest/api_key_strategy.py
-
 import logging
-from typing import Dict, Any, List
+from typing import TYPE_CHECKING, Dict, Any, List
 from contextlib import asynccontextmanager
 
 from cx_core_schemas.vfs import VfsFileContentResponse
 import httpx
+from .....data.agent_schemas import DryRunResult
 
 from ..base import BaseConnectorStrategy
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from cx_core_schemas.connection import Connection
 
 
 class ApiKeyStrategy(BaseConnectorStrategy):
@@ -152,4 +154,21 @@ class ApiKeyStrategy(BaseConnectorStrategy):
         # For now, we raise an error indicating it's not supported for this specific connection.
         raise FileNotFoundError(
             "Opening a 'file' is not a supported operation for this generic API connection."
+        )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        # A basic dry run for this strategy checks for the presence of the API key.
+        secret_key_name = connection.details.get("secret_key_name", "api_key")
+        if secret_key_name not in secrets:
+            return DryRunResult(
+                indicates_failure=True,
+                message=f"Dry run failed: Secret '{secret_key_name}' is missing for this connection.",
+            )
+        return DryRunResult(
+            indicates_failure=False, message="Dry run successful: API key is present."
         )

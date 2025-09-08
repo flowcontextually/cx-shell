@@ -67,7 +67,7 @@ class BeliefManager:
 
         # Apply the patch
         patch_list = patch if isinstance(patch, list) else [patch]
-        updated_dict = jsonpatch.apply_patch(beliefs_dict, patch_list, inplace=False)
+        updated_dict = jsonpatch.apply_patch(beliefs_dict, patch_list)
 
         # Re-validate and update the state with the new Pydantic model
         state.variables[self.BELIEF_STATE_VARIABLE] = AgentBeliefs(**updated_dict)

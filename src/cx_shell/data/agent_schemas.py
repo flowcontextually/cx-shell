@@ -85,34 +85,6 @@ class AgentBeliefs(BaseModel):
 # --- Agent Invocation & Output Schemas ---
 
 
-class LLMResponse(BaseModel):
-    """
-    A structured model for the expected output from the specialist LLM calls.
-    This ensures that the agent's "thoughts" are machine-readable.
-    """
-
-    reasoning: str = Field(
-        ..., description="The agent's rationale for its proposed action."
-    )
-    plan_update: Optional[List[Dict[str, Any]]] = Field(
-        None,
-        description="An optional JSON Patch (RFC 6902) list to modify the plan in AgentBeliefs.",
-    )
-    cx_command: Optional[str] = Field(
-        None, description="The `cx` shell command to be executed for the current step."
-    )
-    confidence: float = Field(
-        default=0.9,
-        ge=0.0,
-        le=1.0,
-        description="The agent's confidence in its proposed command.",
-    )
-    is_final_step: bool = Field(
-        default=False,
-        description="True if the agent believes the task is complete after this step.",
-    )
-
-
 class AnalystResponse(BaseModel):
     """The structured output from the Analyst Agent."""
 
@@ -122,4 +94,47 @@ class AnalystResponse(BaseModel):
     summary_text: str = Field(
         ...,
         description="A concise, natural language summary of the turn for the history log.",
+    )
+    indicates_strategic_failure: bool = Field(
+        False,
+        description="Set to true if the observation reveals the overall plan is flawed and needs revision by the Planner.",
+    )
+
+
+class DryRunResult(BaseModel):
+    """Represents the predicted outcome of a command's execution."""
+
+    indicates_failure: bool = Field(
+        False, description="True if the simulation predicts a runtime error."
+    )
+    message: str = Field(
+        ...,
+        description="A human-readable summary of the predicted outcome (e.g., 'Would make a POST request...').",
+    )
+    predicted_effect: Optional[Dict[str, Any]] = Field(
+        None,
+        description="A structured summary of potential state changes (e.g., {'files_written': 1}).",
+    )
+
+
+class CommandOption(BaseModel):
+    """Represents a single, proposed command in the agent's 'thought tree'."""
+
+    cx_command: str
+    reasoning: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    preview: Optional[DryRunResult] = Field(None, exclude=True)
+
+
+class LLMResponse(BaseModel):
+    """
+    A structured model for the expected output from the ToolSpecialist agent.
+    It now contains a list of potential commands, representing a 'Tree of Thoughts'
+    with a width determined by the number of options.
+    """
+
+    command_options: List[CommandOption] = Field(
+        ...,
+        min_length=1,
+        description="A list of potential commands the agent considered, which should be ordered from most to least confident.",
     )

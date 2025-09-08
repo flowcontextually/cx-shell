@@ -1,3 +1,5 @@
+# /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/main.py
+
 import asyncio
 from pathlib import Path
 
@@ -41,17 +43,13 @@ def start_repl():
     async def repl_main():
         nonlocal state, completer, executor
 
-        # --- FIX: Introduce a state variable for the next prompt's content ---
         next_prompt_default = ""
 
         while state.is_running:
             try:
-                # --- FIX: Use the 'default' argument ---
                 command_text = await prompt_session.prompt_async(
                     "cx> ", default=next_prompt_default
                 )
-
-                # --- FIX: Immediately reset the default after use ---
                 next_prompt_default = ""
 
                 if not command_text or not command_text.strip():
@@ -60,30 +58,32 @@ def start_repl():
                     state.is_running = False
                     continue
 
+                # --- THIS IS THE DEFINITIVE FIX ---
+                # The REPL loop's only job is to detect the trigger and delegate.
                 if command_text.strip().startswith("//"):
                     goal = command_text.strip().lstrip("//").strip()
 
-                    is_ready = await executor.orchestrator._ensure_agent_connection(
-                        "co_pilot"
-                    )
-
-                    if is_ready:
-                        with console.status("Translating intent to command..."):
-                            try:
-                                llm_response = await executor.orchestrator.tool_specialist.generate_command(
-                                    goal, [], is_translate=True
+                    with console.status("Translating intent to command..."):
+                        try:
+                            # Correctly delegate the ENTIRE workflow to the orchestrator.
+                            # This method now handles the connection check, agent call, etc.
+                            suggestion = (
+                                await executor.orchestrator.prepare_and_run_translate(
+                                    goal
                                 )
-                                suggestion = llm_response.cx_command or ""
+                            )
 
-                                # --- FIX: Instead of manipulating the buffer, set the state for the *next* loop iteration ---
+                            # If setup was cancelled or failed, suggestion will be None.
+                            # The orchestrator handles printing user messages.
+                            if suggestion is not None:
                                 next_prompt_default = suggestion
 
-                            except Exception as e:
-                                console.print(
-                                    f"[bold red]Translate Error:[/bold red] {e}"
-                                )
+                        except Exception as e:
+                            console.print(f"[bold red]Translate Error:[/bold red] {e}")
 
-                    continue  # Loop back to render the new prompt with the default value
+                    # Loop back to the top to render the new prompt with the suggestion.
+                    continue
+                # --- END FIX ---
 
                 # Normal command execution path...
                 new_state = await executor.execute(command_text)

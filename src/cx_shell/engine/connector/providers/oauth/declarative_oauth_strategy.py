@@ -5,6 +5,8 @@ import structlog
 
 from ..rest.declarative_strategy import DeclarativeRestStrategy
 from .base_oauth_strategy import BaseOauth2Strategy
+from .....data.agent_schemas import DryRunResult
+
 
 # --- Conditional Imports for Type Hinting ---
 if TYPE_CHECKING:
@@ -123,3 +125,22 @@ class DeclarativeOauthStrategy(BaseOauth2Strategy):
             return await self.rest_strategy.get_content(
                 path_parts, connection, secrets, client=authenticated_client
             )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """A dry run for OAuth checks for the presence of core OAuth secrets."""
+        required_secrets = ["client_id", "client_secret", "refresh_token"]
+        missing = [key for key in required_secrets if key not in secrets]
+        if missing:
+            return DryRunResult(
+                indicates_failure=True,
+                message=f"Dry run failed: Missing required OAuth secrets: {', '.join(missing)}",
+            )
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful: All required OAuth secrets are present.",
+        )

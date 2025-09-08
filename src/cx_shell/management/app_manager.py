@@ -5,7 +5,7 @@ import shutil
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import httpx
 import yaml
@@ -14,7 +14,7 @@ from rich.table import Table
 from prompt_toolkit import PromptSession
 
 from ..engine.connector.config import ConnectionResolver, CX_HOME
-from .connection_manager import ConnectionManager
+from .registry_manager import RegistryManager
 
 console = Console()
 
@@ -30,7 +30,7 @@ class AppManager:
 
     def __init__(self):
         self.resolver = ConnectionResolver()
-        self.connection_manager = ConnectionManager()
+        self.registry_manager = RegistryManager()
         CX_HOME.mkdir(exist_ok=True, parents=True)
 
     # --- NEW HELPER: Load/Save the local apps manifest ---
@@ -48,11 +48,7 @@ class AppManager:
         # ... (This method is complete and correct, no changes needed)
         with console.status("Fetching public application registry..."):
             try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(APPS_REGISTRY_URL)
-                    response.raise_for_status()
-                registry = yaml.safe_load(response.text)
-                apps = registry.get("applications", [])
+                apps = await self.registry_manager.get_available_applications()
             except Exception as e:
                 console.print(
                     f"[bold red]Error:[/bold red] Could not fetch or parse the application registry. {e}"
@@ -75,9 +71,13 @@ class AppManager:
 
         console.print(table)
 
-    async def install(self, app_id: str):
-        """Installs or updates an application."""
-        namespace, name = app_id.split("/")
+    async def install(self, app_id: str, no_interactive: bool = False):
+        """
+        Installs or updates an application from the public registry or a URL.
+        Includes asset installation, manifest tracking, and an interactive
+        connection setup wizard.
+        """
+        # TODO: Add logic to handle installing from a direct URL in addition to app_id
 
         local_manifest = self._load_local_manifest()
         if app_id in local_manifest["installed_apps"]:
@@ -87,18 +87,8 @@ class AppManager:
             return
 
         with console.status("Resolving application from registry..."):
-            async with httpx.AsyncClient() as client:
-                response = await client.get(APPS_REGISTRY_URL)
-                response.raise_for_status()
-            registry = yaml.safe_load(response.text)
-            app_meta = next(
-                (
-                    app
-                    for app in registry.get("applications", [])
-                    if app.get("id") == app_id
-                ),
-                None,
-            )
+            apps = await self.registry_manager.get_available_applications()
+            app_meta = next((app for app in apps if app.get("id") == app_id), None)
 
         if not app_meta:
             console.print(
@@ -106,9 +96,12 @@ class AppManager:
             )
             return
 
+        namespace, name = app_id.split("/")
         version = app_meta["version"]
         tag = f"{namespace}-{name}-v{version}"
-        asset_name = f"{name}-v{version}.tar.gz"
+        asset_name = (
+            f"{name}-v{version}.tar.gz"  # Assuming this is the new standard asset name
+        )
         download_url = APPS_DOWNLOAD_URL_TEMPLATE.format(tag=tag, asset_name=asset_name)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -116,7 +109,9 @@ class AppManager:
             archive_path = tmp_path / asset_name
 
             with console.status(f"Downloading {app_id}@{version}..."):
-                async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=60.0
+                ) as client:
                     response = await client.get(download_url)
                     response.raise_for_status()
                 archive_path.write_bytes(response.content)
@@ -125,8 +120,14 @@ class AppManager:
                 with tarfile.open(archive_path, "r:gz") as tar:
                     tar.extractall(path=tmp_path)
 
-            manifest_path = tmp_path / "app.cx.yaml"
-            with open(manifest_path, "r") as f:
+            app_manifest_path = tmp_path / "app.cx.yaml"
+            if not app_manifest_path.exists():
+                console.print(
+                    "[bold red]Error:[/bold red] Application package is invalid: missing 'app.cx.yaml'."
+                )
+                return
+
+            with open(app_manifest_path, "r") as f:
                 app_manifest = yaml.safe_load(f)
 
             with console.status("Resolving blueprint dependencies..."):
@@ -135,8 +136,12 @@ class AppManager:
                 )
                 for blueprint_id in blueprint_deps:
                     try:
+                        # Use to_thread to run the synchronous resolver method in an async context
                         await asyncio.to_thread(
                             self.resolver.load_blueprint_by_id, blueprint_id
+                        )
+                        console.print(
+                            f"  [green]✓[/green] Resolved blueprint: [dim]{blueprint_id}[/dim]"
                         )
                     except Exception as e:
                         console.print(
@@ -144,7 +149,6 @@ class AppManager:
                         )
                         return
 
-            # --- NEW: Asset Installation Logic ---
             with console.status("Installing application assets..."):
                 installed_assets = []
                 for asset_type in ["flows", "queries", "scripts", "templates"]:
@@ -155,8 +159,10 @@ class AppManager:
                         for item in source_dir.iterdir():
                             shutil.copy(item, target_dir)
                             installed_assets.append(f"{asset_type}/{item.name}")
+                            console.print(
+                                f"  [green]✓[/green] Installed asset: [dim]{asset_type}/{item.name}[/dim]"
+                            )
 
-            # --- NEW: Manifest Tracking Logic ---
             local_manifest["installed_apps"][app_id] = {
                 "version": version,
                 "assets": installed_assets,
@@ -164,32 +170,41 @@ class AppManager:
             }
             self._save_local_manifest(local_manifest)
 
-        # --- NEW: Interactive Connection Setup ---
-        console.print("\n[bold]Application requires the following connections:[/bold]")
-        required_conns = app_manifest.get("required_connections", [])
-        if required_conns:
-            for conn_req in required_conns:
-                console.print(
-                    f"\n--- Setting up connection: [bold cyan]{conn_req['id']}[/bold cyan] ---"
-                )
-                console.print(f"[dim]{conn_req['description']}[/dim]")
-                await self.connection_manager.create_interactive(
-                    preselected_blueprint_id=conn_req["blueprint"]
-                )
-        else:
-            console.print("No connections required for this application.")
+            # --- Interactive Connection Setup ---
+            if not no_interactive:
+                # --- Just-in-Time Import and Instantiation to break circular dependency ---
+                from .connection_manager import ConnectionManager
 
-        console.print(
-            f"\n[bold green]✓[/bold green] Successfully installed application [cyan]{app_id}@{version}[/cyan]."
-        )
+                connection_manager = ConnectionManager()
 
-        # --- NEW: Display README ---
-        readme_path = tmp_path / "README.md"
-        if readme_path.exists():
-            from rich.markdown import Markdown
+                required_conns = app_manifest.get("required_connections", [])
+                if required_conns:
+                    console.print(
+                        "\n[bold]Application requires the following connections:[/bold]"
+                    )
+                    for conn_req in required_conns:
+                        console.print(
+                            f"\n--- Setting up connection: [bold cyan]{conn_req['id']}[/bold cyan] ---"
+                        )
+                        console.print(f"[dim]{conn_req['description']}[/dim]")
+                        await connection_manager.create_interactive(
+                            preselected_blueprint_id=conn_req["blueprint"]
+                        )
+                else:
+                    console.print(
+                        "No new connections are required for this application."
+                    )
 
-            console.print("\n--- Application README ---")
-            console.print(Markdown(readme_path.read_text()))
+            console.print(
+                f"\n[bold green]✓[/bold green] Successfully installed application [cyan]{app_id}@{version}[/cyan]."
+            )
+
+            readme_path = tmp_path / "README.md"
+            if readme_path.exists():
+                from rich.markdown import Markdown
+
+                console.print("\n--- Application README ---")
+                console.print(Markdown(readme_path.read_text()))
 
     # --- NEW: list_installed_apps and uninstall methods ---
     async def list_installed_apps(self):
@@ -248,3 +263,24 @@ class AppManager:
             )
         else:
             console.print("[yellow]Uninstallation cancelled.[/yellow]")
+
+    async def _get_registry(self) -> Dict[str, Any]:
+        """Fetches and parses the public application/blueprint registry."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(APPS_REGISTRY_URL)
+                response.raise_for_status()
+            return yaml.safe_load(response.text)
+        except Exception as e:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not fetch or parse the application registry. {e}"
+            )
+            return {}
+
+    async def get_available_blueprints(self) -> List[Dict[str, Any]]:
+        """Returns a list of available blueprints from the public registry."""
+        registry = await self._get_registry()
+        # In the future, the registry will have a dedicated 'blueprints' key.
+        # For now, we can infer them from the applications' dependencies.
+        # Let's assume for now it has a top-level `blueprints` key for simplicity.
+        return registry.get("blueprints", [])

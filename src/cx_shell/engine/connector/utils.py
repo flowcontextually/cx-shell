@@ -6,15 +6,8 @@ from uuid import UUID
 
 def safe_serialize(data: Any) -> Any:
     """
-    (General Purpose)
     Recursively traverses a data structure and converts common, non-standard
     JSON types into a JSON-serializable format.
-
-    Handles:
-    - datetime and date objects -> ISO 8601 string with 'Z' for UTC.
-    - SurrealDB RecordID-like objects -> string representation.
-    - UUID objects -> string representation.
-    - Decimal objects -> float representation.
     """
     if isinstance(data, list):
         return [safe_serialize(item) for item in data]
@@ -22,20 +15,18 @@ def safe_serialize(data: Any) -> Any:
     if isinstance(data, dict):
         return {key: safe_serialize(value) for key, value in data.items()}
 
-    # --- Type-Specific Handlers ---
-    # Safely handle RecordID-like objects without a hard dependency on surrealdb
-    if (
-        hasattr(data, "id")
-        and isinstance(getattr(data, "id", None), str)
-        and ":" in data.id
-    ):
-        return str(data)
-
-    if isinstance(data, (datetime, date)):
+    # --- THIS IS THE FIX ---
+    # Handle datetime objects first, as they are a subclass of date.
+    if isinstance(data, datetime):
         if data.tzinfo is None:
-            # If the datetime is naive, assume it's UTC. This is a safe default.
+            # If the datetime is naive, assume it's UTC.
             data = data.replace(tzinfo=timezone.utc)
         return data.isoformat().replace("+00:00", "Z")
+
+    # Now handle date objects, which do not have tzinfo.
+    if isinstance(data, date):
+        return data.isoformat()
+    # --- END FIX ---
 
     if isinstance(data, UUID):
         return str(data)
@@ -43,7 +34,14 @@ def safe_serialize(data: Any) -> Any:
     if isinstance(data, Decimal):
         return float(data)
 
-    # For all other standard JSON types (str, int, float, bool, None), return as is.
+    # Safely handle RecordID-like objects
+    if (
+        hasattr(data, "id")
+        and isinstance(getattr(data, "id", None), str)
+        and ":" in data.id
+    ):
+        return str(data)
+
     return data
 
 

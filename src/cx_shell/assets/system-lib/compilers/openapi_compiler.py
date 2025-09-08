@@ -19,14 +19,22 @@ TYPE_MAP = {
 }
 
 # Mapping for common string formats that require specific Python types
-FORMAT_MAP = {
-    "date-time": "datetime",
-    "date": "date",
-    "uuid": "UUID",
-}
+FORMAT_MAP = {"date-time": "datetime", "date": "date", "uuid": "UUID"}
 
 # Python keywords that cannot be used as field names
-PYTHON_KEYWORDS = {"in", "from", "for", "is", "while", "class", "def", "return"}
+PYTHON_KEYWORDS = {
+    "in",
+    "from",
+    "for",
+    "is",
+    "while",
+    "class",
+    "def",
+    "return",
+    "True",
+    "False",
+    "None",
+}
 
 
 def log_to_stderr(message: str):
@@ -34,115 +42,166 @@ def log_to_stderr(message: str):
     print(f"contextual_compiler: {message}", file=sys.stderr)
 
 
-def safe_name(name: str) -> str:
-    """Ensures a name is a valid Python identifier by cleaning and suffixing keywords."""
-    # Replace slashes and other invalid characters with underscores
-    cleaned_name = re.sub(r"[^0-9a-zA-Z_]", "_", name)
+def to_pascal_case(snake_case_str: str) -> str:
+    """Converts a snake_case string to PascalCase for class names."""
+    return "".join(word.capitalize() for word in snake_case_str.split("_"))
+
+
+def safe_snake_case(name: str) -> str:
+    """
+    Converts any string to a valid Python identifier in snake_case.
+    e.g., "get-multiple-artists" -> "get_multiple_artists"
+    e.g., "GetUsersProfile" -> "get_users_profile"
+    e.g., "petId" -> "pet_id"
+    """
+    if not name:
+        return "_unknown"
+    # Replace hyphens, dots, and spaces with underscores
+    s1 = re.sub(r"[-\s\.]+", "_", name)
+    # Insert underscores before uppercase letters (for camelCase/PascalCase conversion)
+    s2 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", s1)
+    s3 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s2).lower()
+
+    # Remove any characters that are not alphanumeric or underscore
+    cleaned_name = re.sub(r"\W+", "", s3)
+
+    # Ensure it doesn't start with a number
+    if cleaned_name and cleaned_name[0].isdigit():
+        cleaned_name = "_" + cleaned_name
+
     if cleaned_name in PYTHON_KEYWORDS:
         return f"{cleaned_name}_"
-    return cleaned_name
+    return cleaned_name or "_unknown"
 
 
 def _get_schemas(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Extracts the reusable schema definitions from either Swagger 2.0 or OpenAPI 3.x."""
-    is_swagger_v2 = "swagger" in spec and spec["swagger"].startswith("2.")
-    if is_swagger_v2:
-        return spec.get("definitions", {})
-    return spec.get("components", {}).get("schemas", {})
+    return spec.get("components", {}).get("schemas", {}) or spec.get("definitions", {})
 
 
 def _generate_data_models(schemas: Dict[str, Any]) -> List[str]:
-    """Generates Pydantic models for data objects (e.g., Pet, User)."""
-    code = []
+    """
+    Generates Pydantic models for complex object schemas and TypeAliases for
+    primitive type schemas found in the OpenAPI specification.
+    """
+    code_lines = []
     if not schemas:
-        return code
+        return code_lines
 
     for schema_name, schema_def in schemas.items():
-        class_name = safe_name(schema_name.strip())
-        required_fields = set(schema_def.get("required", []))
+        schema_type = schema_def.get("type")
 
-        if schema_def.get("type") != "object" or "properties" not in schema_def:
-            log_to_stderr(f"Skipping non-object schema in definitions: {schema_name}")
-            continue
+        # --- Case 1: The schema defines a complex object ---
+        if schema_type == "object" and "properties" in schema_def:
+            class_name = to_pascal_case(safe_snake_case(schema_name))
+            required_fields = set(schema_def.get("required", []))
 
-        code.append(f"class {class_name}(BaseModel):")
-        properties = schema_def.get("properties", {})
-        if not properties:
-            code.append("    pass\n")
-            continue
+            code_lines.append(f"class {class_name}(BaseModel):")
+            properties = schema_def.get("properties", {})
+            if not properties:
+                code_lines.append("    pass\n")
+                continue
 
-        fields = []
-        for prop_name, prop_def in properties.items():
-            field_name = safe_name(prop_name)
-            is_required = prop_name in required_fields
-            python_type = "Any"
-            if "$ref" in prop_def:
-                python_type = f'"{safe_name(prop_def["$ref"].split("/")[-1])}"'
-            elif "type" in prop_def:
-                json_type = prop_def["type"]
-                if json_type == "array":
-                    items_def = prop_def.get("items", {})
-                    item_type = "Any"
-                    if "$ref" in items_def:
-                        item_type = f'"{safe_name(items_def["$ref"].split("/")[-1])}"'
-                    elif "type" in items_def:
-                        item_type = TYPE_MAP.get(items_def["type"], "Any")
-                    python_type = f"List[{item_type}]"
-                else:
-                    python_type = TYPE_MAP.get(json_type, "Any")
-                    if prop_def.get("format") in FORMAT_MAP:
-                        python_type = FORMAT_MAP[prop_def["format"]]
+            fields = []
+            for prop_name, prop_def in properties.items():
+                field_name = safe_snake_case(prop_name)
+                is_required = prop_name in required_fields
+                python_type = "Any"
 
-            field_type = (
-                python_type if is_required else f"Optional[{python_type}] = None"
+                if "$ref" in prop_def:
+                    ref_name = prop_def["$ref"].split("/")[-1]
+                    python_type = f'"{to_pascal_case(safe_snake_case(ref_name))}"'
+                elif "type" in prop_def:
+                    prop_type = prop_def["type"]
+                    if prop_type == "array":
+                        items_def = prop_def.get("items", {})
+                        item_type = "Any"
+                        if "$ref" in items_def:
+                            ref_name = items_def["$ref"].split("/")[-1]
+                            item_type = f'"{to_pascal_case(safe_snake_case(ref_name))}"'
+                        elif "type" in items_def:
+                            item_type = TYPE_MAP.get(items_def["type"], "Any")
+                        python_type = f"List[{item_type}]"
+                    else:
+                        python_type = TYPE_MAP.get(prop_type, "Any")
+                        if prop_def.get("format") in FORMAT_MAP:
+                            python_type = FORMAT_MAP[prop_def["format"]]
+
+                alias = prop_name if field_name != prop_name else None
+
+                if is_required:
+                    field_type_hint = python_type
+                    if alias:
+                        fields.append(
+                            f'    {field_name}: {field_type_hint} = Field(alias="{alias}")'
+                        )
+                    else:
+                        fields.append(f"    {field_name}: {field_type_hint}")
+                else:  # Optional field
+                    field_type_hint = f"Optional[{python_type}]"
+                    field_args = [
+                        "None"
+                    ]  # Default value is always None for optional fields
+                    if alias:
+                        field_args.append(f'alias="{alias}"')
+                    fields.append(
+                        f"    {field_name}: {field_type_hint} = Field({', '.join(field_args)})"
+                    )
+
+            code_lines.extend(fields if fields else ["    pass"])
+            code_lines.append("\n")
+
+        # --- Case 2: The schema is an alias for a primitive type ---
+        elif schema_type in TYPE_MAP:
+            alias_name = to_pascal_case(safe_snake_case(schema_name))
+            python_type = TYPE_MAP[schema_type]
+
+            # Add the original description as a comment for context
+            description = schema_def.get("description", "").replace("\n", " ").strip()
+            if description:
+                code_lines.append(f"# {alias_name}: {description}")
+
+            # Use TypeAlias for clarity
+            code_lines.append(f"{alias_name} = {python_type}")
+            code_lines.append("\n")
+
+        # --- Case 3: Skip other unhandled schema types ---
+        else:
+            log_to_stderr(
+                f"Skipping unhandled schema type '{schema_type}' for definition: {schema_name}"
             )
-            if field_name != prop_name:
-                fields.append(
-                    f'    {field_name}: {field_type} = Field(alias="{prop_name}")'
-                )
-            else:
-                fields.append(f"    {field_name}: {field_type}")
+            continue
 
-        code.extend(fields if fields else ["    pass"])
-        code.append("\n")
-
-    return code
+    return code_lines
 
 
 def _generate_parameter_models(spec: Dict[str, Any]) -> List[str]:
     """Generates Pydantic models for the parameters of each operation."""
-    code = []
+    code_lines = []
     for path, path_item in spec.get("paths", {}).items():
         for method, operation in path_item.items():
             if "operationId" not in operation or not operation.get("parameters"):
                 continue
 
-            op_id = operation["operationId"]
-            class_name = f"{op_id.capitalize()}Parameters"
-
+            action_key = safe_snake_case(operation["operationId"])
+            class_name = f"{to_pascal_case(action_key)}Parameters"
             fields = []
+
             for param in operation.get("parameters", []):
                 if param.get("in") not in ["path", "query", "header"]:
                     continue
 
                 param_name = param["name"]
-                field_name = safe_name(param_name)
+                field_name = safe_snake_case(param_name)
                 is_required = param.get("required", False)
 
-                schema = param.get("schema", param)  # Swagger 2 puts schema inline
-                json_type = schema.get("type")
-                python_type = TYPE_MAP.get(json_type, "Any")
-
+                schema = param.get("schema", param)
+                python_type = TYPE_MAP.get(schema.get("type"), "Any")
                 field_type = (
                     python_type if is_required else f"Optional[{python_type}] = None"
                 )
 
-                # Header parameters with hyphens need an alias
-                alias = (
-                    param_name
-                    if field_name != param_name or "-" in param_name
-                    else None
-                )
+                alias = param_name if field_name != param_name else None
                 if alias:
                     fields.append(
                         f'    {field_name}: {field_type} = Field(alias="{alias}")'
@@ -151,20 +210,19 @@ def _generate_parameter_models(spec: Dict[str, Any]) -> List[str]:
                     fields.append(f"    {field_name}: {field_type}")
 
             if fields:
-                code.append(f"class {class_name}(BaseModel):")
-                code.extend(fields)
-                code.append("\n")
-    return code
+                code_lines.append(f"class {class_name}(BaseModel):")
+                code_lines.extend(fields)
+                code_lines.append("\n")
+    return code_lines
 
 
 def generate_pydantic_code(spec: Dict[str, Any]) -> str:
     """Generates the complete schemas.py file content."""
     schemas = _get_schemas(spec)
-
     header = [
         "# Generated by the Contextually Blueprint Compiler",
         "from __future__ import annotations",
-        "from typing import Any, Dict, List, Optional",
+        "from typing import Any, Dict, List, Optional, TypeAlias",
         "from datetime import date, datetime",
         "from uuid import UUID",
         "from pydantic import BaseModel, Field",
@@ -172,7 +230,6 @@ def generate_pydantic_code(spec: Dict[str, Any]) -> str:
     ]
     data_model_code = _generate_data_models(schemas)
     param_model_code = _generate_parameter_models(spec)
-
     return "\n".join(header + data_model_code + param_model_code)
 
 
@@ -188,12 +245,13 @@ def generate_ccl_blueprint(spec: Dict[str, Any]) -> str:
         server_url = "https://api.example.com"
 
     blueprint = {
-        "id": f"blueprint:{info.get('title', 'untitled').lower().replace(' ', '-')}",
+        "id": f"blueprint:{safe_snake_case(info.get('title', 'untitled'))}",
         "name": info.get("title", "Untitled API"),
         "version": info.get("version", "1.0.0"),
         "connector_provider_key": "rest-declarative",
-        "auth_config": {"type": "none"},
-        "browse_config": {"base_url_template": server_url, "action_templates": {}},
+        "supported_auth_methods": [
+            {"type": "none", "display_name": "No Authentication", "fields": []}
+        ],
     }
 
     action_templates = {}
@@ -205,62 +263,67 @@ def generate_ccl_blueprint(spec: Dict[str, Any]) -> str:
             ):
                 continue
 
-            op_id = operation["operationId"]
-            api_endpoint = path.replace("{", "{{ ").replace("}", " }}")
+            action_key = safe_snake_case(operation["operationId"])
+            api_endpoint = path.replace("{", "{{ context.").replace("}", " }}")
             action = {"http_method": method.upper(), "api_endpoint": api_endpoint}
 
             if any(
                 p.get("in") in ["path", "query", "header"]
                 for p in operation.get("parameters", [])
             ):
-                action["parameters_model"] = f"schemas.{op_id.capitalize()}Parameters"
+                params_class_name = f"{to_pascal_case(action_key)}Parameters"
+                action["parameters_model"] = f"schemas.{params_class_name}"
 
             body_schema_ref = None
-            if "requestBody" in operation:  # OpenAPI 3.x
+            if "requestBody" in operation:
                 try:
                     body_schema_ref = operation["requestBody"]["content"][
                         "application/json"
                     ]["schema"]["$ref"]
                 except KeyError:
                     pass
-            else:  # Swagger 2.0
+            else:
                 for param in operation.get("parameters", []):
                     if param.get("in") == "body" and "$ref" in param.get("schema", {}):
                         body_schema_ref = param["schema"]["$ref"]
                         break
+
             if body_schema_ref:
-                body_schema_name = safe_name(body_schema_ref.split("/")[-1])
+                body_schema_name = to_pascal_case(
+                    safe_snake_case(body_schema_ref.split("/")[-1])
+                )
                 action["payload_constructor"] = {
-                    "_constructor": f"schemas.{body_schema_name}"
+                    "_model": f"schemas.{body_schema_name}"
                 }
 
-            action_templates[op_id] = action
+            action_templates[action_key] = action
 
-    blueprint["browse_config"]["action_templates"] = action_templates
-
+    blueprint["browse_config"] = {
+        "base_url_template": server_url,
+        "action_templates": action_templates,
+    }
     return yaml.dump(blueprint, sort_keys=False, indent=2, width=120)
 
 
 if __name__ == "__main__":
     try:
         log_to_stderr("Contextually custom compiler started.")
-        spec_content = json.load(sys.stdin)
+        spec_content = yaml.safe_load(sys.stdin.read())
 
         log_to_stderr("Generating Pydantic models with custom generator...")
         schemas_py = generate_pydantic_code(spec_content)
-        log_to_stderr(f"Generated {len(schemas_py)} bytes of Python model code.")
 
         log_to_stderr("Generating Contextually blueprint...")
         blueprint_yaml = generate_ccl_blueprint(spec_content)
-        log_to_stderr(f"Generated {len(blueprint_yaml)} bytes of YAML blueprint.")
 
         output = {"blueprint_yaml": blueprint_yaml, "schemas_py": schemas_py}
         print(json.dumps(output, indent=2))
 
         log_to_stderr("Compiler finished successfully.")
         sys.exit(0)
-
     except Exception as e:
         log_to_stderr(f"FATAL ERROR: {type(e).__name__} - {e}")
-        print(f"Compiler failed: {e}", file=sys.stderr)
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)

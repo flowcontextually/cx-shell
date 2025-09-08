@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, TYPE_CHECKING
 
 import structlog
+from .....data.agent_schemas import DryRunResult
+
 
 from cx_core_schemas.connection import Connection
 from ..base import BaseConnectorStrategy
@@ -110,4 +112,16 @@ class SmartFetcherStrategy(BaseConnectorStrategy):
         """Browsing is not supported by the smart fetcher; use a specific strategy."""
         raise NotImplementedError(
             "browse_path is not supported by the SmartFetcherStrategy."
+        )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """This strategy's actions are validated at execution time. The dry run passes by default."""
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful by default for this strategy.",
         )

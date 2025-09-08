@@ -336,13 +336,11 @@ class QueryCommand(Command):
         self,
         subcommand: str,
         name: str | None = None,
-        on_alias: str | None = None,
-        args: Dict[str, Any] | None = None,
+        named_args: Dict[str, Any] | None = None,
     ):
         self.subcommand = subcommand
         self.name = name
-        self.on_alias = on_alias
-        self.args = args or {}
+        self.named_args = named_args or {}
 
     async def execute(
         self,
@@ -362,11 +360,11 @@ class QueryCommand(Command):
 
 
 class ConnectionCommand(Command):
-    """Represents a connection management command, e.g., `connection list`."""
+    """Represents a connection management command, e.g., `connection list` or `connection create`."""
 
-    def __init__(self, subcommand: str, blueprint: str | None = None):
+    def __init__(self, subcommand: str, named_args: Dict[str, Any] | None = None):
         self.subcommand = subcommand
-        self.blueprint = blueprint
+        self.named_args = named_args or {}
 
     async def execute(
         self,
@@ -376,9 +374,8 @@ class ConnectionCommand(Command):
         piped_input: Any = None,
     ) -> Any:
         """
-        This method is a placeholder to satisfy the abstract base class.
-        The actual logic is handled synchronously by the CommandExecutor, which
-        delegates to the ConnectionManager based on the subcommand.
+        This method is a placeholder. The actual logic is handled synchronously
+        by the CommandExecutor, which delegates to the ConnectionManager.
         """
         raise NotImplementedError(
             "ConnectionCommand execution is handled by the CommandExecutor's dispatch logic."
@@ -411,19 +408,14 @@ class ScriptCommand(Command):
 
 
 class OpenCommand(Command):
-    """Represents the `open` command for assets."""
+    """Represents the `open` command for assets, now with support for named arguments."""
 
     def __init__(
-        self,
-        asset_type: str,
-        asset_name: str | None = None,
-        handler: str | None = None,
-        on_alias: str | None = None,
+        self, asset_type: str, asset_name: str | None, named_args: Dict[str, Any]
     ):
         self.asset_type = asset_type
         self.asset_name = asset_name
-        self.handler = handler or "default"
-        self.on_alias = on_alias
+        self.named_args = named_args
 
     async def execute(
         self,
@@ -432,8 +424,12 @@ class OpenCommand(Command):
         status: Status,
         piped_input: Any = None,
     ) -> Any:
+        """
+        This method is a placeholder. The actual logic is handled by the
+        CommandExecutor, which delegates to the OpenManager.
+        """
         raise NotImplementedError(
-            "OpenCommand execution is handled by the CommandExecutor."
+            "OpenCommand execution is handled by the CommandExecutor's dispatch logic."
         )
 
 
@@ -486,4 +482,21 @@ class ProcessCommand(Command):
         status: Status,
         piped_input: Any = None,
     ) -> Any:
+        raise NotImplementedError
+
+
+class CompileCommand(Command):
+    """Represents a `compile` command with its named arguments."""
+
+    def __init__(self, named_args: Dict[str, Any]):
+        self.named_args = named_args
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        # This will be handled by the executor's dispatch logic
         raise NotImplementedError

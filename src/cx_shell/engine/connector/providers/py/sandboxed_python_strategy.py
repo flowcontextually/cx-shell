@@ -9,6 +9,7 @@ import structlog
 
 from ..base import BaseConnectorStrategy
 from .....utils import get_asset_path
+from .....data.agent_schemas import DryRunResult
 from cx_core_schemas.connection import Connection
 
 if TYPE_CHECKING:
@@ -103,3 +104,15 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
         self, path_parts: List[str], connection: "Connection", secrets: Dict[str, Any]
     ) -> "VfsFileContentResponse":
         raise NotImplementedError
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """This strategy's actions are validated at execution time. The dry run passes by default."""
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful by default for this strategy.",
+        )

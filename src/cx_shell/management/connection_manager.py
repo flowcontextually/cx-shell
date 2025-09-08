@@ -7,6 +7,9 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.shortcuts import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from ..engine.connector.config import ConnectionResolver, CX_HOME
+from rich import box
+from .registry_manager import RegistryManager  # ADD THIS
+
 
 # Use a single, shared console for all rich output.
 console = Console()
@@ -21,6 +24,7 @@ class ConnectionManager:
         self.secrets_dir = CX_HOME / "secrets"
         self.connections_dir.mkdir(exist_ok=True, parents=True)
         self.secrets_dir.mkdir(exist_ok=True, parents=True)
+        self.registry_manager = RegistryManager()  # ADD THIS
 
     def list_connections(self):
         """Lists all locally configured connections."""
@@ -50,19 +54,89 @@ class ConnectionManager:
 
         console.print(table)
 
-    async def create_interactive(self, preselected_blueprint_id: Optional[str] = None):
-        """Asynchronously and interactively creates a new connection by loading a blueprint."""
+    async def create_interactive(
+        self, preselected_blueprint_id: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Asynchronously and interactively creates a new connection, with a discovery wizard.
+        Returns the ID of the created connection on success, otherwise None.
+        """
+        console.print("[bold green]--- Create a New Connection ---[/bold green]")
+
+        blueprint_id = preselected_blueprint_id
+        session = PromptSession()
+
+        if not blueprint_id:
+            # --- DISCOVERY WIZARD ---
+            console.print(
+                "\n[bold]How would you like to find a blueprint for your connection?[/bold]"
+            )
+            console.print("  [cyan]1[/cyan]: Search the Public Registry (Recommended)")
+            console.print("  [cyan]2[/cyan]: Enter a Blueprint ID manually")
+
+            choice = await session.prompt_async("Choose an option [1]: ", default="1")
+
+            if choice == "1":
+                try:
+                    with console.status(
+                        "[yellow]Fetching public blueprint registry...[/yellow]"
+                    ):
+                        blueprints = (
+                            await self.registry_manager.get_available_blueprints()
+                        )
+
+                    if not blueprints:
+                        console.print(
+                            "[yellow]Could not find any blueprints in the public registry.[/yellow]"
+                        )
+                        return None
+
+                    table = Table(title="Available Blueprints", box=box.ROUNDED)
+                    table.add_column("#", style="yellow")
+                    table.add_column("ID", style="cyan")
+                    table.add_column("Version", style="magenta")
+                    table.add_column("Description", overflow="fold")
+
+                    for i, bp in enumerate(blueprints):
+                        table.add_row(
+                            str(i + 1),
+                            bp.get("id"),
+                            bp.get("version"),
+                            bp.get("description"),
+                        )
+
+                    console.print(table)
+                    bp_choice_str = await session.prompt_async(
+                        f"Enter the number of the blueprint to use [1-{len(blueprints)}]: "
+                    )
+
+                    chosen_index = int(bp_choice_str) - 1
+                    if 0 <= chosen_index < len(blueprints):
+                        bp_meta = blueprints[chosen_index]
+                        blueprint_id = f"{bp_meta['id']}@{bp_meta['version']}"
+                    else:
+                        raise ValueError("Selection out of range.")
+
+                except (ValueError, IndexError):
+                    console.print("[bold red]Invalid selection. Aborting.[/bold red]")
+                    return None
+                except Exception as e:
+                    console.print(f"[bold red]Could not fetch registry: {e}[/bold red]")
+                    return None
+
+            else:  # Fallback to manual entry
+                blueprint_id = await session.prompt_async(
+                    "Enter the Blueprint ID to use (e.g., community/spotify@1.0.0): "
+                )
+
+        if not blueprint_id or not blueprint_id.strip():
+            console.print("[yellow]No blueprint selected. Aborting.[/yellow]")
+            return None
+
         console.print(
-            "[bold green]--- Create a New Connection (Interactive) ---[/bold green]"
+            f"\nGreat! Let's set up a connection for '[bold magenta]{blueprint_id}[/bold magenta]'."
         )
 
-        prompt_session = PromptSession()
-
-        blueprint_id = preselected_blueprint_id or await prompt_session.prompt_async(
-            "Enter the Blueprint ID to use (e.g., system/mssql@v0.1.1): "
-        )
-
-        # ... (rest of the logic is the same, just with async prompts) ...
         status_text = (
             f"Loading blueprint [bold magenta]{blueprint_id}[/bold magenta]..."
         )
@@ -79,7 +153,7 @@ class ConnectionManager:
                     f"\n[bold red]Error:[/bold red] Could not load blueprint '{blueprint_id}'."
                 )
                 console.print(f"[dim]Details: {e}[/dim]")
-                return
+                return None
 
         chosen_method = auth_methods[0]
         if len(auth_methods) > 1:
@@ -87,27 +161,28 @@ class ConnectionManager:
             choices = {str(i + 1): method for i, method in enumerate(auth_methods)}
             for i, method in choices.items():
                 console.print(f"  [cyan]{i}[/cyan]: {method.display_name}")
-
-            choice_completer = WordCompleter(list(choices.keys()))
-            choice_str = await prompt_session.prompt_async(
-                "Enter your choice (1): ", completer=choice_completer, default="1"
+            choice_str = await session.prompt_async(
+                "Enter your choice (1): ",
+                completer=WordCompleter(list(choices.keys())),
+                default="1",
             )
             chosen_method = choices.get(choice_str, auth_methods[0])
 
         console.print(
             f"\nPlease provide the following details for '[yellow]{chosen_method.display_name}[/yellow]':"
         )
-        conn_name = await prompt_session.prompt_async(
+        conn_name = await session.prompt_async(
             "Enter a friendly name for this connection: "
         )
-        default_id = conn_name.lower().replace(" ", "-")
-        conn_id = await prompt_session.prompt_async(
-            f"Enter a unique ID (alias) ({default_id}) : ", default=default_id
+        default_id = conn_name.lower().replace(" ", "-").replace("_", "-")
+        conn_id = await session.prompt_async(
+            f"Enter a unique ID (alias) for this connection [{default_id}]: ",
+            default=default_id,
         )
 
         details, secrets = {}, {}
         for field in chosen_method.fields:
-            value = await prompt_session.prompt_async(
+            value = await session.prompt_async(
                 f"{field.label}: ", is_password=field.is_password
             )
             if field.type == "secret":
@@ -125,25 +200,27 @@ class ConnectionManager:
         secrets_content = "\n".join(
             [f"{key.upper()}={value}" for key, value in secrets.items()]
         )
+
         conn_file = self.connections_dir / f"{conn_id}.conn.yaml"
         secret_file = self.secrets_dir / f"{conn_id}.secret.env"
 
         console.print("\n[bold]Configuration to be saved:[/bold]")
         console.print(yaml.dump(conn_content, sort_keys=False))
 
-        confirmed = await prompt_session.prompt_async(
-            HTML("\nDo you want to save this connection? [<b>y</b>/n]: "),
+        confirmed = await session.prompt_async(
+            HTML("\nDo you want to save this connection? [<b>y</b>/n]: "), default="y"
         )
         if confirmed.lower() != "n":
             conn_file.write_text(yaml.dump(conn_content, sort_keys=False))
-            secret_file.write_text(secrets_content)
+            if secrets:
+                secret_file.write_text(secrets_content)
             console.print(
                 f"\n[bold green]✅ Connection '{conn_name}' saved successfully![/bold green]"
             )
-            return conn_id  # <--- ADD THIS RETURN STATEMENT
+            return conn_id
         else:
             console.print("\n[bold yellow]Aborted.[/bold yellow]")
-            return None  # <--- ADD THIS RETURN STATEMENT
+            return None
 
     def create_non_interactive(
         self, name: str, id: str, blueprint_id: str, details: Dict, secrets: Dict

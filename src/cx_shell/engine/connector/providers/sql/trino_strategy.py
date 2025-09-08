@@ -1,5 +1,3 @@
-# [REPLACE] /home/dpwanjala/repositories/connector-logic/src/connector_logic/providers/sql/trino_strategy.py
-
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, TYPE_CHECKING
@@ -10,6 +8,8 @@ from sqlalchemy import text
 from ...utils import safe_serialize
 from .base_sqlalchemy_strategy import BaseSqlAlchemyStrategy
 from cx_core_schemas.vfs import VfsFileContentResponse, VfsNodeMetadata
+from .....data.agent_schemas import DryRunResult
+
 
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
@@ -152,4 +152,26 @@ class TrinoStrategy(BaseSqlAlchemyStrategy):
             last_modified=now,
             size=len(content_as_string.encode("utf-8")),
             metadata=metadata,
+        )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """A dry run for Trino checks if all required connection parameters are present."""
+        config = {**connection.details, **secrets}
+        required_fields = ["host", "port", "user", "catalog"]
+        missing = [field for field in required_fields if field not in config]
+
+        if missing:
+            return DryRunResult(
+                indicates_failure=True,
+                message=f"Dry run failed: Missing required Trino connection fields: {', '.join(missing)}",
+            )
+
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful: All required connection parameters are present.",
         )

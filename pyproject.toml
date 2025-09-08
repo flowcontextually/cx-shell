@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cx-shell"
-version = "0.4.0"
+version = "0.5.0"
 description = "The Contextual Shell: a declarative, multi-stage automation platform for modern data and operations teams."
 authors = [
     { name = "David Wanjala", email = "dpwanjala@example.com" },
@@ -40,6 +40,11 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
     "lark>=1.1.9",
     "jsonpatch>=1.33",
+    "instructor[openai,anthropic,google-vertexai]>=1.0",
+    "tenacity>=8.2.3",
+    "lancedb>=0.6.1",
+    "fastembed>=0.2.7",
+    "pyarrow>=15.0.0", 
 ]
 
 # --- Optional Dependencies (Merged) ---
@@ -77,3 +82,8 @@ cx = "cx_shell.main:main"
 # --- Package Discovery ---
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: marks tests that require a live network connection",
+]

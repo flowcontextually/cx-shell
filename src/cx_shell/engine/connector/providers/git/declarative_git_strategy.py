@@ -10,6 +10,8 @@ import structlog
 from .base_git_strategy import BaseGitStrategy
 from ..rest.declarative_strategy import DeclarativeRestStrategy
 from cx_core_schemas.vfs import VfsFileContentResponse, VfsNodeMetadata
+from .....data.agent_schemas import DryRunResult
+
 
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
@@ -180,4 +182,26 @@ class DeclarativeGitStrategy(BaseGitStrategy):
             last_modified=now,
             size=len(file_content_str.encode("utf-8")),
             metadata=metadata,
+        )
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """A dry run for the Git strategy checks for the clone URL template in the blueprint."""
+        if (
+            not connection.catalog
+            or not connection.catalog.browse_config
+            or "clone_url_template"
+            not in connection.catalog.browse_config.get("git_config", {})
+        ):
+            return DryRunResult(
+                indicates_failure=True,
+                message="Dry run failed: Blueprint is missing `git_config.clone_url_template`.",
+            )
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful: Blueprint contains the necessary Git configuration.",
         )

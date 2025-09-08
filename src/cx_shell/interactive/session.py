@@ -1,25 +1,58 @@
 from typing import Any, Dict
+from ..engine.connector.config import ConnectionResolver
 
 
 class SessionState:
     """
     A simple class to hold the state of an interactive cx shell session.
-
-    This object will be created once when the REPL starts and will persist
-    until the user exits. It acts as the "memory" for the shell.
     """
 
-    def __init__(self):
-        # A dictionary to store active connections, mapping an alias
-        # (e.g., "pdb") to the connection's source string (e.g., "user:postgres-prod").
-        self.connections: Dict[str, str] = {}
+    def __init__(self, is_interactive: bool = True):
+        """
+        Initializes the session state.
 
-        # A dictionary to store session variables, allowing users to save
-        # results and reference them later.
+        Args:
+            is_interactive: If False, suppresses the welcome message for non-interactive runs.
+        """
+        self.connections: Dict[str, Any] = {}
         self.variables: Dict[str, Any] = {}
-
-        # A flag to control the main loop of the REPL.
         self.is_running: bool = True
+        self._resolver = (
+            ConnectionResolver()
+        )  # It's good practice to have this available
 
-        print("Welcome to the Contextual Shell (Interactive Mode)!")
-        print("Type 'exit' or press Ctrl+D to quit.")
+        if is_interactive:
+            print("Welcome to the Contextual Shell (Interactive Mode)!")
+            print("Type 'exit' or press Ctrl+D to quit.")
+
+    def get_secrets_for_alias(self, alias: str) -> Dict[str, Any]:
+        """
+        Securely loads the secrets for a given active connection alias on-demand.
+
+        This prevents secrets from being stored directly in the session state object,
+        which might be pickled or logged.
+
+        Args:
+            alias: The active session alias (e.g., 'cx_openai').
+
+        Returns:
+            A dictionary of secrets for that connection.
+
+        Raises:
+            ValueError: If the alias is not active in the current session.
+        """
+        if alias not in self.connections:
+            raise ValueError(
+                f"Connection alias '{alias}' is not active in the current session."
+            )
+
+        source = self.connections[alias]
+
+        # We don't need the full async resolve here, as the resolver has a synchronous
+        # method to load secrets from files, which is what we need.
+        # The resolve() method returns a tuple of (Connection, secrets).
+        # We only need the secrets part.
+        _conn, secrets = self._resolver._resolve_from_file(
+            self._resolver.user_connections_dir / f"{source.split(':')[1]}.conn.yaml"
+        )
+        return secrets

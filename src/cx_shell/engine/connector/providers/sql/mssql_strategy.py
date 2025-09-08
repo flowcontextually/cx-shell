@@ -3,6 +3,8 @@ import structlog
 from urllib.parse import quote_plus
 
 from .base_sqlalchemy_strategy import BaseSqlAlchemyStrategy
+from .....data.agent_schemas import DryRunResult
+
 
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
@@ -54,3 +56,28 @@ class MssqlStrategy(BaseSqlAlchemyStrategy):
             "Constructed MSSQL connection URL.", server=server, database=database
         )
         return conn_url
+
+    async def dry_run(
+        self,
+        connection: "Connection",
+        secrets: Dict[str, Any],
+        action_params: Dict[str, Any],
+    ) -> "DryRunResult":
+        """
+        A dry run for MSSQL checks if all required connection details and secrets are present.
+        """
+        config = {**connection.details, **secrets}
+        required_fields = ["server", "database", "username", "password"]
+
+        missing_fields = [field for field in required_fields if field not in config]
+
+        if missing_fields:
+            return DryRunResult(
+                indicates_failure=True,
+                message=f"Dry run failed: Missing required connection fields: {', '.join(missing_fields)}",
+            )
+
+        return DryRunResult(
+            indicates_failure=False,
+            message="Dry run successful: All required connection parameters are present.",
+        )

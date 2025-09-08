@@ -13,25 +13,24 @@ profiles:
       connection_alias: "cx_openai"
       action: "createChatCompletion"
       parameters:
-        model: "gpt-4-turbo-preview"
-        temperature: 0.2
+        model: "gpt-5-2025-08-07"
 
     # The Tool Specialist needs to be precise and deterministic.
     tool_specialist:
       connection_alias: "cx_openai"
       action: "createChatCompletion"
       parameters:
-        model: "gpt-4-turbo-preview"
-        temperature: 0.0 # Zero temperature for maximum determinism in command generation.
-        # response_format: { "type": "json_object" } # Future: Add JSON mode when blueprints support it.
+        model: "gpt-5-2025-08-07"
+        response_format: { "type": "json_object" } # Future: Add JSON mode when blueprints support it.
 
     # The Analyst can be a cheaper, faster model as its task is more constrained.
     analyst:
       connection_alias: "cx_openai"
       action: "createChatCompletion"
       parameters:
-        model: "gpt-3.5-turbo"
-        temperature: 0.3
+        model: "gpt-5-2025-08-07"
+        # temperature: 0.3
+        response_format: { "type": "json_object" }
 
     # The inline co-pilot (`//`) must be extremely fast for a good UX.
     co_pilot:

@@ -1,13 +1,13 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import List, Any
+from typing import List, Any, Optional
 from dataclasses import dataclass
 from ast import literal_eval
 import jmespath
+import structlog
 
 from lark import Lark, Transformer, v_args
-from lark.exceptions import LarkError
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -26,6 +26,7 @@ from ..management.open_manager import OpenManager
 from ..management.app_manager import AppManager
 from ..management.process_manager import ProcessManager
 from .agent_orchestrator import AgentOrchestrator
+from ..management.compile_manager import CompileManager
 from .commands import (
     Command,
     DotNotationCommand,
@@ -44,10 +45,14 @@ from .commands import (
     AppCommand,
     AgentCommand,
     ProcessCommand,
+    CompileCommand,
 )
 from .session import SessionState
+from ..data.agent_schemas import DryRunResult
+
 
 console = Console()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -59,177 +64,340 @@ class VariableLookup:
 
 @v_args(inline=True)
 class CommandTransformer(Transformer):
-    """Transforms the Lark parse tree into our executable objects and formatter options."""
+    """Transforms the Lark parse tree into our executable Command objects."""
 
-    # This class is an internal implementation detail and does not require extensive docstrings.
-    # Its correctness is verified by the successful parsing of commands.
     def command_line(self, executable, formatter=None):
-        """
-        Handles the top-level rule. Receives the executed command/pipeline
-        and EITHER a list of formatter options OR None.
-        """
+        logger.debug(
+            "Transforming: command_line",
+            executable=type(executable).__name__,
+            formatter=formatter,
+        )
         merged_options = {}
-        if formatter:  # formatter is a list of dicts from the formatter_option+ rule
+        if formatter:
             for option_dict in formatter:
                 merged_options.update(option_dict)
-
         return executable, merged_options or None
 
     def executable(self, exec_obj):
+        logger.debug("Transforming: executable", result_type=type(exec_obj).__name__)
         return exec_obj
 
     def single_executable(self, exec_obj):
+        logger.debug(
+            "Transforming: single_executable", result_type=type(exec_obj).__name__
+        )
         return exec_obj
 
     def pipeline(self, *items):
+        logger.debug("Transforming: pipeline", num_items=len(items))
         return PipelineCommand(list(items))
 
     def assignment(self, var_name, executable):
+        logger.debug("Transforming: assignment", var_name=var_name.value)
         return AssignmentCommand(var_name.value, executable)
 
     def single_command(self, command):
+        logger.debug("Transforming: single_command", result_type=type(command).__name__)
         return command
 
+    def builtin_command(self, cmd):
+        logger.debug("Transforming: builtin_command", result_type=type(cmd).__name__)
+        return cmd
+
     def variable_lookup(self, var_name):
+        logger.debug("Transforming: variable_lookup", var_name=var_name.value)
         return VariableLookup(var_name.value)
 
     def formatter(self, *options):
+        logger.debug("Transforming: formatter", options=options)
         return list(options)
 
     def formatter_option(self, option):
+        logger.debug("Transforming: formatter_option", option=option)
         return option
 
     def output_option(self, mode):
+        logger.debug("Transforming: output_option", mode=mode.value)
         return {"output_mode": mode.value}
 
     def columns_option(self, columns):
+        logger.debug("Transforming: columns_option", columns=columns)
         return {"columns": columns}
 
     def query_option(self, query_str):
+        logger.debug("Transforming: query_option", query=query_str.value)
         return {"query": literal_eval(query_str.value)}
 
     def column_list(self, *cols):
+        logger.debug("Transforming: column_list", cols=[c.value for c in cols])
         return [c.value for c in cols]
 
     def dot_notation_kw_action(self, alias, action_name, arguments=None):
+        logger.debug(
+            "Transforming: dot_notation_kw_action",
+            alias=alias.value,
+            action=action_name.value,
+        )
         return DotNotationCommand(alias.value, action_name.value, arguments or {})
 
     def dot_notation_pos_action(self, alias, action_name, string_arg):
+        logger.debug(
+            "Transforming: dot_notation_pos_action",
+            alias=alias.value,
+            action=action_name.value,
+        )
         return PositionalArgActionCommand(
             alias.value, action_name.value, literal_eval(string_arg.value)
         )
 
     def connect_command(self, source, alias):
+        logger.debug("Transforming: connect_command")
         return BuiltinCommand(["connect", source.value, "--as", alias.value])
 
     def connections_command(self):
+        logger.debug("Transforming: connections_command")
         return BuiltinCommand(["connections"])
 
     def help_command(self):
+        logger.debug("Transforming: help_command")
         return BuiltinCommand(["help"])
 
     def inspect_command(self, var_name):
+        logger.debug("Transforming: inspect_command", var_name=var_name.value)
         return InspectCommand(var_name.value)
 
+    def compile_command(self, *named_args):
+        args_dict = {
+            key.lstrip("-").replace("-", "_"): value for key, value in named_args
+        }
+        return CompileCommand(named_args=args_dict)
+
+    def agent_command(self, goal):
+        logger.debug("Transforming: agent_command")
+        return AgentCommand(literal_eval(goal.value))
+
+    # --- Grouped Command Pass-throughs ---
+    def session_command(self, cmd_obj):
+        logger.debug("Transforming: session_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def session_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _session_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def variable_command(self, _, cmd_obj):
+        logger.debug(
+            "Transforming: variable_command", child_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def variable_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _variable_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def flow_command(self, _, cmd_obj):
+        logger.debug("Transforming: flow_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def flow_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _flow_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def query_command(self, _, cmd_obj):
+        logger.debug("Transforming: query_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def query_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _query_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def script_command(self, _, cmd_obj):
+        logger.debug("Transforming: script_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def script_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _script_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def connection_command(self, cmd_obj):
+        logger.debug(
+            "Transforming: connection_command", child_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def connection_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _connection_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def app_command(self, _, cmd_obj):
+        logger.debug("Transforming: app_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def app_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _app_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    def process_command(self, _, cmd_obj):
+        logger.debug("Transforming: process_command", child_type=type(cmd_obj).__name__)
+        return cmd_obj
+
+    def process_subcommand(self, cmd_obj):
+        logger.debug(
+            "Transforming: _process_subcommand", result_type=type(cmd_obj).__name__
+        )
+        return cmd_obj
+
+    # --- Child Rules that Create Objects ---
     def session_list(self):
+        logger.debug("Creating SessionCommand(list)")
         return SessionCommand("list")
 
     def session_save(self, name):
+        logger.debug("Creating SessionCommand(save)")
         return SessionCommand("save", name.value)
 
     def session_load(self, name):
+        logger.debug("Creating SessionCommand(load)")
         return SessionCommand("load", name.value)
 
     def session_rm(self, name):
+        logger.debug("Creating SessionCommand(rm)")
         return SessionCommand("rm", name.value)
 
     def session_status(self):
+        logger.debug("Creating SessionCommand(status)")
         return SessionCommand("status")
 
     def variable_list(self):
+        logger.debug("Creating VariableCommand(list)")
         return VariableCommand("list")
 
     def variable_rm(self, var_name):
+        logger.debug("Creating VariableCommand(rm)")
         return VariableCommand("rm", var_name.value)
 
     def flow_list(self):
+        logger.debug("Creating FlowCommand(list)")
         return FlowCommand("list")
 
-    # def flow_run(self, flow_name, arguments=None):
-    #     return FlowCommand("run", name=flow_name.value, args=arguments)
-
-    def flow_run_with_args(self, flow_name, arguments=None):
+    def flow_run(self, flow_name, arguments=None):
+        logger.debug("Creating FlowCommand(run)")
         return FlowCommand("run", name=flow_name.value, args=arguments or {})
 
-    def flow_run_no_args(self, flow_name):
-        return FlowCommand("run", name=flow_name.value, args={})
-
     def query_list(self):
+        logger.debug("Creating QueryCommand(list)")
         return QueryCommand("list")
 
     def query_run(self, on_alias, query_name, arguments=None):
+        logger.debug("Creating QueryCommand(run)")
         return QueryCommand(
-            "run", name=query_name.value, on_alias=on_alias.value, args=arguments
+            "run", name=query_name.value, on_alias=on_alias.value, args=arguments or {}
         )
 
     def script_list(self):
+        logger.debug("Creating ScriptCommand(list)")
         return ScriptCommand("list")
 
     def script_run(self, script_name, arguments=None):
-        return ScriptCommand("run", name=script_name.value, args=arguments)
+        logger.debug("Creating ScriptCommand(run)")
+        return ScriptCommand("run", name=script_name.value, args=arguments or {})
 
     def connection_list(self):
         return ConnectionCommand("list")
 
-    def connection_create(self, blueprint_str):
-        return ConnectionCommand("create", blueprint=literal_eval(blueprint_str.value))
+    def connection_create(self, *named_args):
+        args_dict = {key.lstrip("-"): value for key, value in named_args}
+        return ConnectionCommand("create", named_args=args_dict)
 
-    def open_command(self, *args):
-        asset_type = args[0].value
-        asset_name, handler, on_alias = None, None, None
-        remaining_args = list(args[1:])
-        if remaining_args and not asset_type.startswith("{{"):
-            if not (hasattr(remaining_args[0], "data")):
-                asset_name = remaining_args.pop(0).value
-        for arg in remaining_args:
-            if hasattr(arg, "data"):
-                if arg.data == "on_alias":
-                    on_alias = arg.children[0].value
-                elif arg.data == "handler":
-                    handler = arg.children[0].value
-        return OpenCommand(asset_type, asset_name, handler, on_alias)
+    def open_command(self, asset_type_token, asset_name_token=None, *named_args):
+        logger.debug("Creating OpenCommand")
+        asset_type = asset_type_token.value
+        asset_name = asset_name_token.value if asset_name_token else None
+        args_dict = {key.lstrip("-"): value for key, value in named_args}
+        return OpenCommand(asset_type, asset_name, args_dict)
 
     def app_list(self):
+        logger.debug("Creating AppCommand(list)")
         return AppCommand("list")
 
     def app_install(self, arg):
+        logger.debug("Creating AppCommand(install)")
         return AppCommand("install", arg.value)
 
     def app_uninstall(self, arg):
+        logger.debug("Creating AppCommand(uninstall)")
         return AppCommand("uninstall", arg.value)
 
     def app_sync(self):
+        logger.debug("Creating AppCommand(sync)")
         return AppCommand("sync")
 
-    def agent_command(self, goal):
-        return AgentCommand(literal_eval(goal.value))
-
     def process_list(self):
+        logger.debug("Creating ProcessCommand(list)")
         return ProcessCommand("list")
 
     def process_logs(self, arg, follow=None):
+        logger.debug("Creating ProcessCommand(logs)")
         return ProcessCommand("logs", arg.value, follow is not None)
 
     def process_stop(self, arg):
+        logger.debug("Creating ProcessCommand(stop)")
         return ProcessCommand("stop", arg.value)
 
+    # --- Argument & Terminal Parsing ---
     def arguments(self, *args):
+        logger.debug("Parsing: arguments")
         return dict(args)
 
     def kw_argument(self, key, value):
+        logger.debug("Parsing: kw_argument")
         return key.value, value
 
+    def named_argument(self, flag, value):
+        processed_value = value
+
+        # If the value is a Token, get its string value
+        if hasattr(value, "value"):
+            processed_value = value.value
+
+        # Handle quoted strings from the STRING terminal
+        if (
+            isinstance(processed_value, str)
+            and processed_value.startswith('"')
+            and processed_value.endswith('"')
+        ):
+            processed_value = literal_eval(processed_value)
+        else:
+            # Try to convert unquoted ARGs to numbers if possible
+            try:
+                # Attempt to convert to int, then float
+                processed_value = int(processed_value)
+            except ValueError:
+                try:
+                    processed_value = float(processed_value)
+                except ValueError:
+                    pass  # Keep as string if it's not a number
+
+        logger.debug("Parsing: named_argument", flag=flag.value, value=processed_value)
+        return (flag.value, processed_value)
+
     def value(self, v):
+        # This can be noisy, so we'll log the type
+        logger.debug("Parsing: value", value_type=type(v).__name__)
         if hasattr(v, "type"):
             if v.type == "JINJA_BLOCK":
                 return v.value
@@ -240,12 +408,15 @@ class CommandTransformer(Transformer):
         return v
 
     def true(self, _):
+        logger.debug("Parsing: true")
         return True
 
     def false(self, _):
+        logger.debug("Parsing: false")
         return False
 
     def null(self, _):
+        logger.debug("Parsing: null")
         return None
 
 
@@ -265,6 +436,7 @@ class CommandExecutor:
         self.open_manager = OpenManager()
         self.app_manager = AppManager()
         self.process_manager = ProcessManager()
+        self.compile_manager = CompileManager()
         self.orchestrator = AgentOrchestrator(state, self)
         self.builtin_commands = {
             "connect": self.execute_connect,
@@ -276,34 +448,48 @@ class CommandExecutor:
             self.parser = Lark(f.read(), start="start", parser="lalr")
         self.transformer = CommandTransformer()
 
-    async def execute(self, command_text: str) -> SessionState | None:
+    async def execute(
+        self, command_text: str, piped_input: Any = None
+    ) -> Optional[SessionState]:
         """
         The main entry point for the executor.
-
-        Parses a raw command string, executes the resulting command object,
-        and prints the final result. Returns a new SessionState object if a
-        session was loaded, otherwise returns None.
+        Parses, transforms, and executes a command string.
         """
         if not command_text.strip():
             return None
         try:
-            executable_obj, formatter_options = self.transformer.transform(
-                self.parser.parse(command_text)
+            parsed_tree = self.parser.parse(command_text)
+            executable_obj, formatter_options = self.transformer.transform(parsed_tree)
+
+            result = await self._execute_executable(
+                executable_obj, piped_input=piped_input
             )
-            result = await self._execute_executable(executable_obj)
+
             if isinstance(result, SessionState):
                 return result
+
             self._print_result(result, executable_obj, formatter_options)
-        except LarkError as e:
-            context = e.get_context(command_text, span=40)
-            console.print(
-                f"[bold red]Syntax Error:[/bold red] Invalid syntax near column {e.column}.\n{context}"
-            )
+
+        # except LarkError as e:
+        #     # This handles PARSING errors (invalid syntax)
+        #     context = e.get_context(command_text, span=40)
+        #     console.print(
+        #         f"[bold red]Syntax Error:[/bold red] Invalid syntax.\n{context}"
+        #     )
+        # except VisitError as e:
+        #     # This handles TRANSFORMING errors (mismatch between grammar and transformer)
+        #     console.print(
+        #         f"[bold red]Grammar Mismatch Error:[/bold red] The command was parsed, but the executor doesn't know how to handle the rule '{e.rule}'."
+        #     )
+        #     console.print("[dim]This is an internal application error.[/dim]")
+
         except Exception as e:
+            # This handles EXECUTION errors (runtime errors from commands)
             original_exc = getattr(e, "orig_exc", e)
             console.print(
                 f"[bold red]{type(original_exc).__name__}:[/bold red] {original_exc}"
             )
+
         return None
 
     async def _execute_executable(
@@ -391,7 +577,31 @@ class CommandExecutor:
 
     async def _dispatch_management_command(self, command: Command) -> Any:
         """Routes all non-data-producing management commands to their respective handlers."""
-        if isinstance(command, BuiltinCommand):
+
+        if isinstance(command, CompileCommand):
+            # --- THIS IS THE FIX ---
+            # Use the underscore version of the keys to match what the
+            # CommandTransformer produces.
+            spec_url = command.named_args.get("spec_url")
+            name = command.named_args.get("name")
+            version = command.named_args.get("version")
+            # --- END FIX ---
+
+            # Add a check for the required argument
+            if not spec_url or not name or not version:
+                raise ValueError(
+                    "The compile command requires --spec-url, --name, and --version arguments."
+                )
+
+            await self.compile_manager.run_compile(
+                spec_source=spec_url,
+                name=name,
+                version=version,
+                namespace=command.named_args.get("namespace", "user"),
+            )
+
+        # --- Built-in Commands (connect, help, etc.) ---
+        elif isinstance(command, BuiltinCommand):
             handler = self.builtin_commands.get(command.command)
             if handler:
                 return (
@@ -399,11 +609,16 @@ class CommandExecutor:
                     if asyncio.iscoroutinefunction(handler)
                     else handler(command.args)
                 )
+
+        # --- Connection Management ---
         elif isinstance(command, ConnectionCommand):
             if command.subcommand == "list":
                 self.connection_manager.list_connections()
             elif command.subcommand == "create":
-                await self.connection_manager.create_interactive(command.blueprint)
+                blueprint_id = command.named_args.get("blueprint")
+                await self.connection_manager.create_interactive(blueprint_id)
+
+        # --- Session Management ---
         elif isinstance(command, SessionCommand):
             if command.subcommand == "list":
                 self.session_manager.list_sessions()
@@ -415,26 +630,36 @@ class CommandExecutor:
                 return await self.session_manager.delete_session(command.arg)
             elif command.subcommand == "load":
                 return self.session_manager.load_session(command.arg)
+
+        # --- Variable Management ---
         elif isinstance(command, VariableCommand):
             if command.subcommand == "list":
                 self.variable_manager.list_variables(self.state)
             elif command.subcommand == "rm":
                 return self.variable_manager.delete_variable(self.state, command.arg)
+
+        # --- Asset Listing ---
         elif isinstance(command, FlowCommand) and command.subcommand == "list":
             self.flow_manager.list_flows()
         elif isinstance(command, QueryCommand) and command.subcommand == "list":
             self.query_manager.list_queries()
         elif isinstance(command, ScriptCommand) and command.subcommand == "list":
             self.script_manager.list_scripts()
+
+        # --- Asset Interaction ---
         elif isinstance(command, OpenCommand):
+            handler = command.named_args.get("in", "default")
+            on_alias = command.named_args.get("on")
             await self.open_manager.open_asset(
                 self.state,
                 self.service,
                 command.asset_type,
                 command.asset_name,
-                command.handler,
-                command.on_alias,
+                handler,
+                on_alias,
             )
+
+        # --- Application Management ---
         elif isinstance(command, AppCommand):
             if command.subcommand == "list":
                 await self.app_manager.list_installed_apps()
@@ -444,31 +669,34 @@ class CommandExecutor:
             elif command.subcommand == "uninstall":
                 await self.app_manager.uninstall(command.arg)
             else:
-                # For now, placeholder for sync
                 console.print(
                     f"[yellow]'{command.subcommand}' command is not yet fully implemented.[/yellow]"
                 )
-            return
+
+        # --- Agent & Process Management ---
         elif isinstance(command, AgentCommand):
             await self.orchestrator.start_session(command.goal)
-            return None  # Orchestrator handles all output and state
-
         elif isinstance(command, ProcessCommand):
             if command.subcommand == "list":
                 self.process_manager.list_processes()
             elif command.subcommand == "logs":
                 self.process_manager.get_logs(command.arg, command.follow)
-            # TODO: Implement stop logic
-            # elif command.subcommand == "stop":
-            #     self.process_manager.stop(command.arg)
-            return None
+
+        # --- Inspection ---
         elif isinstance(command, InspectCommand):
             return await command.execute(self.state, self.service, None)
+
         else:
             console.print(
-                f"[bold red]Error:[/bold red] Unknown management command '{command}'."
+                f"[bold red]Error:[/bold red] Unknown management command '{type(command).__name__}'."
             )
-        return None
+
+        # Most management commands do not return data, but we return a success
+        # message to give the AnalystAgent a concrete observation.
+        return {
+            "status": "success",
+            "message": f"Management command '{type(command).__name__}' executed successfully.",
+        }
 
     def _print_result(self, result: Any, executable: Any, options: dict | None = None):
         """Handles the final rendering of a command's result to the console."""
@@ -631,8 +859,10 @@ class CommandExecutor:
                 console.print(
                     f"[bold red]Error:[/bold red] Unknown command '{command.command}'."
                 )
-
-        return None
+        return {
+            "status": "success",
+            "message": f"Builtin command '{command.command}' executed.",
+        }
 
     def execute_help(self, args: List[str]):
         """Displays a structured and comprehensive guide for the interactive shell."""
@@ -772,3 +1002,36 @@ class CommandExecutor:
         else:
             error_message = result.get("message", "An unknown error occurred.")
             console.print(f"[bold red]❌ Connection failed:[/bold red] {error_message}")
+
+    async def dry_run(self, command_text: str) -> DryRunResult:
+        """Parses a command and routes it to the appropriate dry_run method."""
+        try:
+            executable_obj, _ = self.transformer.transform(
+                self.parser.parse(command_text)
+            )
+
+            # Dispatcher for dry_run
+            if isinstance(executable_obj, DotNotationCommand):
+                step = executable_obj.to_step(self.state)
+                if step.run.action == "run_declarative_action":
+                    conn, secrets = await self.service.resolver.resolve(
+                        step.connection_source
+                    )
+                    strategy = self.service._get_strategy_for_connection_model(conn)
+
+                    if hasattr(strategy, "dry_run"):
+                        return await strategy.dry_run(
+                            conn, secrets, step.run.model_dump()
+                        )
+
+            # TODO: Implement dry_run dispatch for SQL, FS, and other strategies.
+
+            # Default fallback if no specific dry_run is implemented.
+            return DryRunResult(
+                indicates_failure=False, message="Command is syntactically valid."
+            )
+
+        except Exception as e:
+            return DryRunResult(
+                indicates_failure=True, message=f"Command is invalid. Error: {e}"
+            )

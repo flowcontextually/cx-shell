@@ -1,26 +1,26 @@
+# /home/dpwanjala/repositories/cx-shell/src/cx_shell/agent/planner_agent.py
+
 from typing import List
-import json
-from pydantic import TypeAdapter
 
 from .base_agent import BaseSpecialistAgent
 from ..data.agent_schemas import PlanStep
-from cx_core_schemas.connector_script import (
-    ConnectorScript,
-    ConnectorStep,
-    RunDeclarativeAction,
-)
 
 SYSTEM_PROMPT = """
-You are the Planner Agent, a high-level strategic thinker for the `cx` shell.
-Your role is to decompose a user's complex goal into a logical, step-by-step plan.
-Do not generate commands. Focus only on the strategy.
+You are the Planner Agent, a high-level strategic thinker for the `cx` shell. Your sole purpose is to decompose a user's goal into a logical sequence of high-level steps.
 
-You will be given the user's goal and the current strategic context, which includes
-relevant existing workflows and available connections.
+**CRITICAL CONSTRAINTS:**
+1.  Your world is limited to the capabilities of the `cx` shell. You CANNOT write code, access external websites, or perform tasks outside of this shell.
+2.  Your plan steps must be described as goals for another AI agent to accomplish using `cx` commands.
+3.  The plan should be concise, logical, and directly address the user's goal using the tools and assets mentioned in the provided context.
+4.  Your output MUST be ONLY a valid JSON array of `PlanStep` objects. Do not add any commentary or conversational text.
 
-Your output MUST be a JSON array of objects, where each object represents a step in the plan.
-Each object must have a single key: "step", with a string value describing the goal for that step.
-Example: [{"step": "First step goal."}, {"step": "Second step goal."}]
+**Example Plan:**
+[
+  {"step": "Use the `compile` command to generate a blueprint from the provided URL."},
+  {"step": "Use the `connection create` command to set up a new connection for the newly created blueprint."},
+  {"step": "Activate the new connection using the `connect` command."},
+  {"step": "Test a simple action from the new blueprint to verify it works."}
+]
 """
 
 
@@ -34,12 +34,6 @@ class PlannerAgent(BaseSpecialistAgent):
         """
         Takes a user goal and context, and returns a structured plan.
         """
-        if not self.agent_config:
-            raise RuntimeError("Agent configuration is missing or invalid.")
-
-        profile = self.agent_config.profiles[self.agent_config.default_profile]
-        planner_config = profile.planner
-
         user_prompt = (
             f"## User Goal\n{goal}\n\n## Strategic Context\n{strategic_context}"
         )
@@ -49,39 +43,15 @@ class PlannerAgent(BaseSpecialistAgent):
             {"role": "user", "content": user_prompt},
         ]
 
-        # Use the cx ConnectorService to make the LLM call
-        script = ConnectorScript(
-            name="Invoke Planner Agent",
-            steps=[
-                ConnectorStep(
-                    id="call_planner_llm",
-                    name="Call Planner LLM",
-                    connection_source=self.state.connections[
-                        planner_config.connection_alias
-                    ],
-                    run=RunDeclarativeAction(
-                        action="run_declarative_action",
-                        template_key=planner_config.action,
-                        context={"messages": messages, **planner_config.parameters},
-                    ),
-                )
-            ],
-        )
-
-        result = await self.connector_service.engine.run_script_model(script)
-        llm_response = result["Call Planner LLM"]
-
-        # Extract, parse, and validate the plan from the LLM's response
-        # This logic needs to be provider-specific (OpenAI, Anthropic, etc.)
-        # For now, we assume an OpenAI-like response structure.
-        response_content = (
-            llm_response.get("choices", [{}])[0].get("message", {}).get("content", "[]")
-        )
-
         try:
-            plan_data = json.loads(response_content)
-            adapter = TypeAdapter(List[PlanStep])
-            return adapter.validate_python(plan_data)
-        except (json.JSONDecodeError, Exception):
-            # Fallback or error handling
-            return [PlanStep(step="Failed to generate a valid plan.")]
+            plan = await self.llm_client.create_structured_response(
+                role_name="planner", response_model=List[PlanStep], messages=messages
+            )
+            return plan
+        except Exception as e:
+            return [
+                PlanStep(
+                    step=f"The Planner Agent failed to generate a valid plan: {e}",
+                    status="failed",
+                )
+            ]

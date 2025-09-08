@@ -1,8 +1,11 @@
+# /home/dpwanjala/repositories/cx-shell/src/cx_shell/agent/base_agent.py
+
 from abc import ABC
 import yaml
+from typing import Optional
 
 from ..interactive.session import SessionState
-from ..engine.connector.service import ConnectorService
+from .llm_client import LLMClient
 from ..data.agent_schemas import AgentConfig
 from ..engine.connector.config import CX_HOME
 
@@ -10,40 +13,43 @@ AGENT_CONFIG_FILE = CX_HOME / "agents.config.yaml"
 
 
 class BaseSpecialistAgent(ABC):
-    """
-    Abstract base class for a specialist agent in the CARE architecture.
-    """
+    """Abstract base class for a specialist agent in the CARE architecture."""
 
-    def __init__(self, state: SessionState, connector_service: ConnectorService):
+    def __init__(self, state: SessionState, llm_client: LLMClient):
         """
         Initializes the agent with access to the core services.
-
-        Args:
-            state: The current interactive session state.
-            connector_service: The service for making blueprint-driven API calls (e.g., to LLMs).
+        Crucially, this constructor performs NO I/O.
         """
         self.state = state
-        self.connector_service = connector_service
-        self.agent_config: AgentConfig | None = self._load_agent_config()
+        self.llm_client = llm_client
+        self._agent_config: Optional[AgentConfig] = None
+        self._config_loaded = False
 
-    def _load_agent_config(self) -> AgentConfig | None:
+    @property
+    def agent_config(self) -> Optional[AgentConfig]:
+        """
+        Lazily loads the agent configuration on first access.
+        This prevents blocking I/O in the constructor.
+        """
+        if not self._config_loaded:
+            self._agent_config = self._load_agent_config()
+            self._config_loaded = True
+        return self._agent_config
+
+    def _load_agent_config(self) -> Optional[AgentConfig]:
         """Loads and validates the agents.config.yaml file."""
-        if not AGENT_CONFIG_FILE.exists():
-            # If the user's config doesn't exist, we should try to use the
-            # default one bundled with the application.
-            from ..utils import get_asset_path
+        from ..utils import get_asset_path
 
+        config_file_to_load = AGENT_CONFIG_FILE
+        if not config_file_to_load.exists():
             default_config_path = get_asset_path("configs/agents.default.yaml")
             if not default_config_path.exists():
                 return None
             config_file_to_load = default_config_path
-        else:
-            config_file_to_load = AGENT_CONFIG_FILE
 
         try:
             with open(config_file_to_load, "r") as f:
                 config_data = yaml.safe_load(f)
             return AgentConfig.model_validate(config_data)
         except Exception:
-            # Silently fail if the config is invalid, the agent will not be able to run.
             return None

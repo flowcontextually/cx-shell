@@ -53,8 +53,14 @@ class ConnectionResolver:
         from the central GitHub blueprints repository.
         """
         parts = blueprint_match.groupdict()
-        namespace, name, version = parts["namespace"], parts["name"], parts["version"]
+        namespace, name, version_from_id = (
+            parts["namespace"],
+            parts["name"],
+            parts["version"],
+        )
 
+        # The canonical local path should NOT include the 'v' prefix.
+        version = version_from_id.lstrip("v")
         local_path = BLUEPRINTS_BASE_PATH / namespace / name / version
 
         if local_path.is_dir() and any(local_path.iterdir()):
@@ -63,15 +69,15 @@ class ConnectionResolver:
             )
             return
 
-        # The version from the blueprint ID (e.g., "1.0.0") does not contain the 'v'.
-        # The release tag format is `<namespace>-<name>-v<version>`. We must add the 'v' here.
-        if not version.startswith("v"):
-            tag_version = f"v{version}"
-        else:
-            tag_version = version  # If it already has a 'v', don't double it.
-
+        # --- THIS IS THE FIX ---
+        # The tag name in the GitHub release URL MUST follow the convention:
+        # <namespace>-<name>-v<version>
+        # We ensure the 'v' is present for the tag, even if it wasn't in the blueprint_id.
+        tag_version = f"v{version}"
         tag_name = f"{namespace}-{name}-{tag_version}"
-        asset_name = f"{name}.zip"  # The asset is just the name.zip
+        # --- END FIX ---
+
+        asset_name = f"{name}.zip"
         asset_url = f"https://github.com/{BLUEPRINTS_GITHUB_ORG}/{BLUEPRINTS_GITHUB_REPO}/releases/download/{tag_name}/{asset_name}"
 
         try:

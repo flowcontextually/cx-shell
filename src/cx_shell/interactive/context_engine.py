@@ -1,119 +1,159 @@
 import sqlite3
 import importlib.util
-from pydantic import BaseModel
-# We will assume LanceDB and an embedding model are installed.
-# For now, these imports are placeholders to show intent.
-# import lancedb
-# from sentence_transformers import SentenceTransformer
-
+import yaml
+import structlog
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+from pydantic import BaseModel
+from fastembed import TextEmbedding
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
 
 from ..engine.connector.config import CX_HOME, ConnectionResolver
 from ..interactive.session import SessionState
 from ..data.agent_schemas import AgentBeliefs
 
 # --- Constants ---
+logger = structlog.get_logger(__name__)
 CONTEXT_DIR = CX_HOME / "context"
 HISTORY_DB_FILE = CONTEXT_DIR / "history.sqlite"
 VECTOR_STORE_DIR = CONTEXT_DIR / "vector.lance"
+EMBEDDING_CACHE_DIR = CONTEXT_DIR / "embedding_models"
+
+
+# --- LanceDB Schema ---
+class AssetSchema(LanceModel):
+    text: str  # The content to be searched (e.g., description)
+    source: str  # The path or ID of the asset (e.g., "flows/my-flow.yaml")
+    type: str  # The type of asset (e.g., "flow", "query", "application")
+    vector: Vector(384)  # Vector size for BAAI/bge-small-en-v1.5
 
 
 class DynamicContextEngine:
     """
     Constructs intelligent, minimal, and relevant context for the CARE agents.
-    It combines vector search, structured queries, and graph traversal
-    to provide a rich understanding of the user's workspace and history.
+    It combines vector search (for semantic similarity) and structured queries
+    (for precise history) to provide a rich understanding of the user's workspace.
     """
 
     def __init__(self, state: SessionState):
         CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
         self.state = state
         self.resolver = ConnectionResolver()
-        # In a real implementation, these would be initialized carefully.
-        # self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        # self.db = lancedb.connect(VECTOR_STORE_DIR)
-        self._init_history_db()
+        self.embedding_model: Optional[TextEmbedding] = None
+        self.asset_table: Optional[Any] = None
+        self._schema_cache: Dict[str, Dict[str, Any]] = {}
 
-    def _init_history_db(self):
-        """Initializes the SQLite database for structured event history."""
-        with sqlite3.connect(HISTORY_DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                command_text TEXT,
-                status TEXT,
-                duration_ms INTEGER,
-                observation_summary TEXT,
-                session_id TEXT
+        try:
+            self.embedding_model = TextEmbedding(
+                model_name="BAAI/bge-small-en-v1.5", cache_dir=str(EMBEDDING_CACHE_DIR)
             )
-            """)
-            conn.commit()
+            db = lancedb.connect(VECTOR_STORE_DIR)
+
+            table_names = db.table_names()
+            if "assets" in table_names:
+                self.asset_table = db.open_table("assets")
+            else:
+                self.asset_table = db.create_table("assets", schema=AssetSchema)
+
+            logger.info("ContextEngine RAG components initialized successfully.")
+        except Exception as e:
+            logger.warn(
+                "ContextEngine RAG components failed to initialize. Agent context will be limited.",
+                error=str(e),
+            )
+
+    def index_workspace_assets(self):
+        """Scans the user's workspace (~/.cx) and indexes all assets in the vector store."""
+        if not self.asset_table or not self.embedding_model:
+            logger.warn(
+                "Cannot index workspace assets: RAG components not initialized."
+            )
+            return
+
+        assets_to_index = []
+        asset_dirs = {
+            "flow": CX_HOME / "flows",
+            "query": CX_HOME / "queries",
+            "script": CX_HOME / "scripts",
+        }
+
+        for asset_type, asset_dir in asset_dirs.items():
+            if not asset_dir.is_dir():
+                continue
+
+            for asset_file in asset_dir.iterdir():
+                try:
+                    content = asset_file.read_text()
+                    description = f"A {asset_type} named '{asset_file.stem}'."
+                    if asset_file.suffix in [".yaml", ".yml"]:
+                        data = yaml.safe_load(content)
+                        description = data.get("description", description)
+
+                    assets_to_index.append(
+                        {
+                            "text": description,
+                            "source": f"{asset_type}s/{asset_file.name}",
+                            "type": asset_type,
+                        }
+                    )
+                except Exception:
+                    continue  # Skip files we can't read
+
+        if not assets_to_index:
+            return
+
+        self.asset_table.add(assets_to_index)
+        logger.info("Workspace asset indexing complete.", count=len(assets_to_index))
 
     def get_strategic_context(self, goal: str, beliefs: AgentBeliefs) -> str:
-        """
-        Builds a high-level context for the PlannerAgent.
-        It retrieves relevant past workflows and high-level tool categories.
-
-        Args:
-            goal: The user's current high-level goal.
-            beliefs: The current state of the agent's beliefs.
-
-        Returns:
-            A formatted string to be injected into the Planner's system prompt.
-        """
-        # --- Placeholder for RAG implementation ---
-        # 1. Embed the `goal`.
-        # 2. Query AssetVectorStore for similar flows/blueprints.
-        # 3. Query SessionHistoryDB for successful commands related to the goal.
-        # 4. Query the GraphDB for relationships.
-        # --- End Placeholder ---
-
-        context_parts = []
-        context_parts.append("## Current Situation")
-        context_parts.append(f'- The user\'s goal is: "{goal}"')
+        """Builds a high-level context for the PlannerAgent using hybrid retrieval."""
+        context_parts = ["## Current Situation", f'- User\'s goal: "{goal}"']
         if beliefs.plan:
             context_parts.append("- The current plan is:")
             for i, step in enumerate(beliefs.plan):
-                status_icon = (
-                    "✓"
-                    if step.status == "completed"
-                    else ("✗" if step.status == "failed" else "…")
-                )
+                status_icon = {"completed": "✓", "failed": "✗"}.get(step.status, "…")
                 context_parts.append(f"  {status_icon} {i + 1}. {step.step}")
 
-        context_parts.append("\n## Available Connections")
-        if not self.state.connections:
-            context_parts.append("- No connections are active.")
-        else:
-            for alias in self.state.connections.keys():
-                context_parts.append(f"- `{alias}`: An active connection.")
+        # 1. Retrieve similar assets from Vector Store
+        if self.asset_table and self.embedding_model:
+            try:
+                goal_vector = list(self.embedding_model.embed([goal]))[0].tolist()
+                results = self.asset_table.search(goal_vector).limit(3).to_list()
+                if results:
+                    context_parts.append("\n## Relevant Assets in Your Workspace")
+                    for res in results:
+                        context_parts.append(
+                            f"- Asset: `{res['source']}` (Description: {res['text']})"
+                        )
+            except Exception as e:
+                logger.warn("Vector search for strategic context failed.", error=str(e))
 
-        # TODO: Add retrieved RAG results here
+        # 2. Retrieve recent commands from SQLite
+        try:
+            with sqlite3.connect(HISTORY_DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT content FROM events WHERE event_type = 'COMMAND' AND status = 'SUCCESS' ORDER BY timestamp DESC LIMIT 3"
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    context_parts.append("\n## Recent Successful Commands")
+                    for row in rows:
+                        context_parts.append(f"- `{row[0]}`")
+        except Exception as e:
+            logger.warn("SQLite search for strategic context failed.", error=str(e))
 
         return "\n".join(context_parts)
 
     def get_tactical_context(self, connection_alias: str) -> List[Dict[str, Any]]:
-        """
-        Builds a detailed, structured context for the ToolSpecialistAgent.
-        It retrieves the full JSON Schema for all actions on a specific connection.
-
-        Args:
-            connection_alias: The alias of the connection to get tools for.
-
-        Returns:
-            A list of tool definitions in OpenAI Function Calling format.
-        """
+        """Builds a detailed, structured context (tool schemas) for the ToolSpecialistAgent."""
         if connection_alias not in self.state.connections:
             raise ValueError(f"Connection alias '{connection_alias}' is not active.")
 
         source = self.state.connections[connection_alias]
         try:
-            # Load the full blueprint for the connection
             conn_model, _ = self.resolver.resolve(source)
             if not conn_model.catalog or not conn_model.catalog.browse_config:
                 return []
@@ -134,13 +174,10 @@ class DynamicContextEngine:
 
                 model_name_str = config.get("parameters_model")
                 if model_name_str and conn_model.catalog.schemas_module_path:
-                    # Dynamically convert the Pydantic model to JSON Schema
                     schema = self._get_schema_for_model(
                         conn_model.catalog.schemas_module_path, model_name_str
                     )
                     if schema:
-                        # Pydantic's model_json_schema includes a 'title' and 'description' we don't need at the top level.
-                        # We extract the core properties and required fields.
                         func_def["parameters"]["properties"] = schema.get(
                             "properties", {}
                         )
@@ -148,31 +185,46 @@ class DynamicContextEngine:
 
                 tools.append({"type": "function", "function": func_def})
             return tools
-
-        except Exception:
-            # Fail gracefully if blueprint loading fails
+        except Exception as e:
+            logger.error(
+                "Failed to generate tactical context.",
+                alias=connection_alias,
+                error=str(e),
+            )
             return []
 
     def _get_schema_for_model(
         self, schemas_py_file: str, model_path_str: str
-    ) -> Dict[str, Any] | None:
-        """Dynamically loads a Pydantic model and converts it to a JSON Schema."""
+    ) -> Optional[Dict[str, Any]]:
+        """Dynamically loads a Pydantic model and converts it to a JSON Schema, with caching."""
+        cache_key = f"{schemas_py_file}:{model_path_str}"
+        if cache_key in self._schema_cache:
+            return self._schema_cache[cache_key]
+
         if not model_path_str.startswith("schemas."):
             return None
 
         class_name = model_path_str.split(".", 1)[1]
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"blueprint_schemas_{Path(schemas_py_file).stem}", schemas_py_file
-            )
+            # Use a unique module name to avoid import cache collisions
+            module_name = f"blueprint_schemas_{Path(schemas_py_file).stem}_{class_name}"
+            spec = importlib.util.spec_from_file_location(module_name, schemas_py_file)
+            if not spec or not spec.loader:
+                return None
+
             schemas_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(schemas_module)
 
             ParamModel = getattr(schemas_module, class_name)
             if issubclass(ParamModel, BaseModel):
-                # Use Pydantic's built-in JSON schema generation
-                return ParamModel.model_json_schema()
-        except (FileNotFoundError, AttributeError, ImportError, Exception):
-            # Catch all exceptions during dynamic loading to ensure stability.
-            pass
+                schema = ParamModel.model_json_schema()
+                self._schema_cache[cache_key] = schema
+                return schema
+        except Exception as e:
+            logger.warn(
+                "Failed to load or convert Pydantic model to schema.",
+                model=model_path_str,
+                error=str(e),
+            )
+
         return None

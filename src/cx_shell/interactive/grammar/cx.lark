@@ -1,7 +1,5 @@
-// /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/grammar/cx.lark
-
 ?start: command_line
-command_line: executable [formatter]
+command_line: executable formatter?
 
 executable: assignment | pipeline | single_executable
 pipeline: single_executable ("|" single_executable)+
@@ -10,20 +8,25 @@ assignment: CNAME "=" executable
 single_executable: single_command | variable_lookup | "(" executable ")"
 variable_lookup: CNAME
 
-single_command: dot_notation_kw_action | dot_notation_pos_action
-              | connect_command | connections_command | help_command
-              | inspect_command
-              | transform_command | extract_command
-              | session_list | session_save | session_load | session_rm | session_status
-              | variable_list | variable_rm
-              | flow_list | flow_run_with_args | flow_run_no_args
-              | query_list | query_run_with_args | query_run_no_args
-              | script_list | script_run_with_args | script_run_no_args
-              | connection_list | connection_create
-              | open_command
-              | app_list | app_install | app_uninstall | app_sync
-              | agent_command
-              | process_list | process_logs | process_stop
+single_command: dot_notation_kw_action
+              | dot_notation_pos_action
+              | builtin_command
+
+builtin_command: connections_command
+               | help_command
+               | inspect_command
+               | connect_command
+               | session_command
+               | variable_command
+               | flow_command
+               | query_command
+               | script_command
+               | connection_command
+               | open_command
+               | app_command
+               | agent_command
+               | process_command
+               | compile_command
 
 formatter: formatter_option+
 formatter_option: output_option | columns_option | query_option
@@ -32,63 +35,76 @@ columns_option: "--columns" column_list
 query_option: "--query" STRING
 column_list: CNAME ("," CNAME)*
 
-// --- COMMAND DEFINITIONS ---
+# --- COMMAND DEFINITIONS ---
 dot_notation_kw_action: CNAME "." CNAME "(" [arguments] ")"
 dot_notation_pos_action: CNAME "." CNAME "(" STRING ")"
 connect_command: "connect" ARG "--as" CNAME
 connections_command: "connections"
 help_command: "help"
 inspect_command: "inspect" ARG
-transform_command: "transform" "run" "--script" ARG
-extract_command: "extract" "run" "--script" ARG
-
-session_list: "session" "list"
-session_save: "session" "save" ARG
-session_load: "session" "load" ARG
-session_rm: "session" "rm" ARG
-session_status: "session" "status"
-
-variable_list: ("var" | "vars") "list"
-variable_rm: ("var" | "vars") "rm" ARG
-
-// --- DEFINITIVE FIX FOR ALL RUN COMMANDS ---
-flow_list: "flow" "list"
-flow_run_with_args: "flow" "run" ARG arguments
-flow_run_no_args: "flow" "run" ARG
-
-query_list: "query" "list"
-query_run_with_args: "query" "run" "--on" CNAME ARG arguments
-query_run_no_args: "query" "run" "--on" CNAME ARG
-
-script_list: "script" "list"
-script_run_with_args: "script" "run" ARG arguments
-script_run_no_args: "script" "run" ARG
-// --- END FIX ---
-
-connection_list: "connection" "list"
-connection_create: "connection" "create" "--blueprint" STRING
-
-open_command: "open" (JINJA_BLOCK | ARG) [ARG] open_flag*
-
-open_flag: "--on" CNAME -> on_alias
-         | "--in" CNAME -> handler
-
-app_list: "app" "list"
-app_install: "app" "install" ARG
-app_uninstall: "app" "uninstall" ARG
-app_sync: "app" "sync"
-
+compile_command: "compile" named_argument+
 agent_command: "agent" STRING
 
-process_list: "process" "list"
-process_logs: "process" "logs" ARG ["--follow"]
-process_stop: "process" "stop" ARG
+# --- Grouped Commands with Aliased Sub-Rules ---
 
-// --- ARGUMENT & TERMINAL DEFINITIONS ---
-arguments: (kw_argument ("," kw_argument)*) // This is now non-optional where used
+session_command: "session" session_subcommand
+session_subcommand: "list" -> session_list
+                  | "status" -> session_status
+                  | "save" ARG -> session_save
+                  | "load" ARG -> session_load
+                  | "rm" ARG -> session_rm
+
+variable_command: ("var" | "vars") variable_subcommand
+variable_subcommand: "list" -> variable_list
+                   | "rm" ARG -> variable_rm
+
+flow_command: "flow" flow_subcommand
+flow_subcommand: "list" -> flow_list
+               | "run" ARG [arguments] -> flow_run
+
+query_command: "query" query_subcommand
+query_subcommand: "list" -> query_list
+                | "run" ARG named_argument+ -> query_run_named
+
+script_command: "script" script_subcommand
+script_subcommand: "list" -> script_list
+                 | "run" ARG [arguments] -> script_run
+
+connection_command: "connection" connection_subcommand
+connection_subcommand: "list" -> connection_list
+                     | "create" named_argument* -> connection_create
+
+open_command: "open" (JINJA_BLOCK | ARG) [ARG] named_argument*
+
+app_command: "app" app_subcommand
+app_subcommand: "list" -> app_list
+              | "install" ARG -> app_install
+              | "uninstall" ARG -> app_uninstall
+              | "sync" -> app_sync
+
+process_command: "process" process_subcommand
+process_subcommand: "list" -> process_list
+                  | "logs" ARG ["--follow"] -> process_logs
+                  | "stop" ARG -> process_stop
+
+# --- ARGUMENT & TERMINAL DEFINITIONS ---
+arguments: (kw_argument ("," kw_argument)*)
 kw_argument: CNAME "=" value
+
+# Simplified rule for named arguments. The ARG terminal will capture all
+# unquoted values, which are then parsed in the transformer.
+named_argument: FLAG (STRING | ARG)
+
+# Give FLAG a higher priority to ensure it's matched before the more generic ARG.
+# This resolves the "--spec-url" vs. ARG ambiguity.
+FLAG.1: /--[a-zA-Z0-9_-]+/
+
+# `value` is for keyword arguments inside parentheses, like `gh.action(key=value)`.
+# It does not need ARG, as unquoted values there are treated as CNAMEs (variable names).
 value: STRING | NUMBER | "true" -> true | "false" -> false | "null" -> null | CNAME | JINJA_BLOCK
-ARG: /[\/a-zA-Z0-9_:\-.~]+/
+
+# ARG is for any unquoted, path-like or version-like string.
+ARG: /[\/a-zA-Z0-9_:\-.~+]+/
 JINJA_BLOCK: /\{\{.*?\}\}/
 %import common.ESCAPED_STRING -> STRING
 %import common.SIGNED_NUMBER -> NUMBER

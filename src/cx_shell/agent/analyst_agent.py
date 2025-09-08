@@ -1,43 +1,76 @@
-# /home/dpwanjala/repositories/cx-shell/src/cx_shell/agent/analyst_agent.py
-
 import json
 from typing import Any
-from pydantic import TypeAdapter, ValidationError
-import structlog
 
 from .base_agent import BaseSpecialistAgent
 from ..data.agent_schemas import AnalystResponse
 from ..engine.connector.utils import safe_serialize
-from cx_core_schemas.connector_script import (
-    ConnectorScript,
-    ConnectorStep,
-    RunDeclarativeAction,
-)
 
-logger = structlog.get_logger(__name__)
-
-SYSTEM_PROMPT = """
-You are the Analyst Agent within the `cx` shell's CARE (Composite Agent Reasoning Engine).
+SYSTEM_PROMPT = """You are the Analyst Agent within the `cx` shell's CARE (Composite Agent Reasoning Engine).
 Your role is to be a precise and factual data interpreter.
+You will be given the goal of the previous step and the raw `Observation` from the command that was executed.
 
-You will be given the goal of the previous step and the raw `Observation` (the JSON output or error message) from the command that was executed.
+**Your Responsibilities:**
 
-Your responsibilities are:
-1.  **Analyze the Observation:** Determine if the observation indicates success, failure, or partial progress toward the step's goal.
-2.  **Extract Key Facts:** Identify the single most important piece of information from the observation and structure it.
-3.  **Update Beliefs:** Formulate a single JSON Patch operation to update the agent's belief state. This should typically be an 'add' or 'replace' operation on the `/discovered_facts` or `/plan/{index}/status` paths.
-4.  **Summarize:** Write a concise, one-sentence summary of what happened in this turn.
+1.  **Analyze Observation:** Determine if the command was successful. A successful execution that returns an empty list, `null`, or a "not found" message is a SEMANTIC failure. A traceback or HTTP 4xx/5xx error is a RUNTIME failure.
+2.  **Determine Strategic Failure:** If the observation indicates that the overall plan is flawed or impossible (e.g., a required resource does not exist), set `indicates_strategic_failure` to `true`.
+3.  **Update Beliefs:** Formulate a SINGLE, precise JSON Patch operation to update the agent's belief state. This should usually be adding a fact to `/discovered_facts`. **Even if the observation is `null` or uninteresting, you MUST still provide a minimal patch, like adding a `note` to the discovered facts.**
+4.  **Summarize:** Write a concise, one-sentence summary of what happened.
 
-Your output MUST be a single, valid JSON object that conforms to the following structure:
+Your output MUST conform to the `AnalystResponse` schema provided.
+
+---
+**Examples of Perfect Responses:**
+
+**Example 1: The Observation is `null` or uninteresting.**
+*Step Goal:* "Use the `connection list` command to display all saved connections."
+*Raw Observation:* `{"status": "success", "message": "Management command 'ConnectionCommand' executed successfully."}`
+
+*Your Output (JSON):*
+```json
 {
   "belief_update": {
-    "op": "add|replace",
-    "path": "/path/to/update",
-    "value": "extracted_value or new_status"
+    "op": "add",
+    "path": "/discovered_facts/turn_1_note",
+    "value": "The connection list command was executed as planned."
   },
-  "summary_text": "A concise, one-sentence natural language summary of the turn."
+  "summary_text": "The command to list connections executed successfully.",
+  "indicates_strategic_failure": false
 }
-Do not output anything other than this JSON object.
+```
+
+**Example 2: The Observation contains a key piece of new information.**
+*Step Goal:* "Get the profile for the user 'torvalds'."
+*Raw Observation:* `{"login": "torvalds", "id": 1024025, "repos_url": "https://api.github.com/users/torvalds/repos"}`
+
+*Your Output (JSON):*
+```json
+{
+  "belief_update": {
+    "op": "add",
+    "path": "/discovered_facts/user_torvalds_repos_url",
+    "value": "https://api.github.com/users/torvalds/repos"
+  },
+  "summary_text": "Successfully retrieved the user profile for 'torvalds' and found the repository URL.",
+  "indicates_strategic_failure": false
+}
+```
+
+**Example 3: The Observation is a critical error.**
+*Step Goal:* "Compile the blueprint from the provided URL."
+*Raw Observation:* `{"error": "FileNotFoundError: Blueprint 'community/spotify@v1.0.0' not found."}`
+
+*Your Output (JSON):*
+```json
+{
+  "belief_update": {
+    "op": "add",
+    "path": "/discovered_facts/compilation_error",
+    "value": "The specified blueprint version 'community/spotify@v1.0.0' does not exist."
+  },
+  "summary_text": "The compilation failed because the specified blueprint version could not be found.",
+  "indicates_strategic_failure": true
+}
+```
 """
 
 
@@ -52,14 +85,10 @@ class AnalystAgent(BaseSpecialistAgent):
         """
         Takes the result of a command and returns an analysis.
         """
-        if not self.agent_config:
-            raise RuntimeError("Agent configuration is missing or invalid.")
-
-        profile = self.agent_config.profiles[self.agent_config.default_profile]
-        config = profile.analyst
-
         try:
-            observation_str = json.dumps(safe_serialize(observation), indent=2)
+            observation_str = json.dumps(
+                safe_serialize(observation), indent=2, ensure_ascii=False
+            )
         except Exception:
             observation_str = repr(observation)
 
@@ -70,46 +99,18 @@ class AnalystAgent(BaseSpecialistAgent):
             {"role": "user", "content": user_prompt},
         ]
 
-        script = ConnectorScript(
-            name="Invoke Analyst Agent",
-            steps=[
-                ConnectorStep(
-                    id="call_analyst_llm",
-                    name="Call LLM",
-                    connection_source=self.state.connections[config.connection_alias],
-                    run=RunDeclarativeAction(
-                        action="run_declarative_action",
-                        template_key=config.action,
-                        context={"messages": messages, **config.parameters},
-                    ),
-                )
-            ],
-        )
-
-        result = await self.connector_service.engine.run_script_model(script)
-        llm_response_data = result.get("Call LLM", {})
-
-        response_content = (
-            llm_response_data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "{}")
-        )
-
         try:
-            response_json = json.loads(response_content)
-            adapter = TypeAdapter(AnalystResponse)
-            return adapter.validate_python(response_json)
-        except (json.JSONDecodeError, ValidationError) as e:
-            logger.error(
-                "LLM failed to produce valid JSON for analyst response",
-                error=str(e),
-                raw_content=response_content,
+            response = await self.llm_client.create_structured_response(
+                role_name="analyst", response_model=AnalystResponse, messages=messages
             )
+            return response
+        except Exception as e:
             return AnalystResponse(
                 belief_update={
                     "op": "add",
                     "path": "/discovered_facts/analyst_error",
-                    "value": f"Failed to parse Analyst response: {e}",
+                    "value": f"Failed to get analysis from LLM: {e}",
                 },
                 summary_text="The Analyst agent failed to process the observation.",
+                indicates_strategic_failure=True,
             )
