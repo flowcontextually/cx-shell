@@ -1,3 +1,5 @@
+# /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/context_engine.py
+
 import sqlite3
 import importlib.util
 import yaml
@@ -38,37 +40,71 @@ class DynamicContextEngine:
     """
 
     def __init__(self, state: SessionState):
+        """
+        Initializes the context engine. This constructor is lightweight and
+        performs NO expensive I/O or model loading.
+        """
         CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
         self.state = state
         self.resolver = ConnectionResolver()
-        self.embedding_model: Optional[TextEmbedding] = None
-        self.asset_table: Optional[Any] = None
         self._schema_cache: Dict[str, Dict[str, Any]] = {}
 
-        try:
-            self.embedding_model = TextEmbedding(
-                model_name="BAAI/bge-small-en-v1.5", cache_dir=str(EMBEDDING_CACHE_DIR)
-            )
-            db = lancedb.connect(VECTOR_STORE_DIR)
+        # --- LAZY LOADING IMPLEMENTATION ---
+        # Initialize expensive components to None. They will be loaded on first access
+        # via the @property methods defined below.
+        self._embedding_model: Optional[TextEmbedding] = None
+        self._asset_table: Optional[Any] = None
+        # --- END LAZY LOADING IMPLEMENTATION ---
 
-            table_names = db.table_names()
-            if "assets" in table_names:
-                self.asset_table = db.open_table("assets")
-            else:
-                self.asset_table = db.create_table("assets", schema=AssetSchema)
+    @property
+    def embedding_model(self) -> Optional[TextEmbedding]:
+        """Lazily loads the embedding model on first access."""
+        if self._embedding_model is None:
+            try:
+                logger.debug(
+                    "context_engine.lazy_load.begin", component="fastembed_model"
+                )
+                self._embedding_model = TextEmbedding(
+                    model_name="BAAI/bge-small-en-v1.5",
+                    cache_dir=str(EMBEDDING_CACHE_DIR),
+                )
+                logger.info("ContextEngine: fastembed model loaded successfully.")
+            except Exception as e:
+                logger.warn(
+                    "ContextEngine: Failed to initialize fastembed model.", error=str(e)
+                )
+                # Set to a "failed" state to prevent repeated load attempts
+                self._embedding_model = None
+        return self._embedding_model
 
-            logger.info("ContextEngine RAG components initialized successfully.")
-        except Exception as e:
-            logger.warn(
-                "ContextEngine RAG components failed to initialize. Agent context will be limited.",
-                error=str(e),
-            )
+    @property
+    def asset_table(self) -> Optional[Any]:
+        """Lazily loads the LanceDB vector table on first access."""
+        if self._asset_table is None:
+            try:
+                logger.debug(
+                    "context_engine.lazy_load.begin", component="lancedb_table"
+                )
+                db = lancedb.connect(VECTOR_STORE_DIR)
+                if "assets" in db.table_names():
+                    self._asset_table = db.open_table("assets")
+                else:
+                    self._asset_table = db.create_table("assets", schema=AssetSchema)
+                logger.info("ContextEngine: LanceDB vector table loaded successfully.")
+            except Exception as e:
+                logger.warn(
+                    "ContextEngine: Failed to initialize LanceDB table.", error=str(e)
+                )
+                # Set to a "failed" state
+                self._asset_table = None
+        return self._asset_table
 
     def index_workspace_assets(self):
         """Scans the user's workspace (~/.cx) and indexes all assets in the vector store."""
+        # Accessing the properties will trigger the lazy loading if needed.
         if not self.asset_table or not self.embedding_model:
             logger.warn(
-                "Cannot index workspace assets: RAG components not initialized."
+                "Cannot index workspace assets: RAG components not initialized or failed to load."
             )
             return
 
@@ -82,7 +118,6 @@ class DynamicContextEngine:
         for asset_type, asset_dir in asset_dirs.items():
             if not asset_dir.is_dir():
                 continue
-
             for asset_file in asset_dir.iterdir():
                 try:
                     content = asset_file.read_text()
@@ -90,7 +125,6 @@ class DynamicContextEngine:
                     if asset_file.suffix in [".yaml", ".yml"]:
                         data = yaml.safe_load(content)
                         description = data.get("description", description)
-
                     assets_to_index.append(
                         {
                             "text": description,
@@ -99,7 +133,7 @@ class DynamicContextEngine:
                         }
                     )
                 except Exception:
-                    continue  # Skip files we can't read
+                    continue
 
         if not assets_to_index:
             return
@@ -116,7 +150,7 @@ class DynamicContextEngine:
                 status_icon = {"completed": "✓", "failed": "✗"}.get(step.status, "…")
                 context_parts.append(f"  {status_icon} {i + 1}. {step.step}")
 
-        # 1. Retrieve similar assets from Vector Store
+        # 1. Retrieve similar assets from Vector Store (will trigger lazy loading)
         if self.asset_table and self.embedding_model:
             try:
                 goal_vector = list(self.embedding_model.embed([goal]))[0].tolist()
@@ -157,11 +191,9 @@ class DynamicContextEngine:
             conn_model, _ = self.resolver.resolve(source)
             if not conn_model.catalog or not conn_model.catalog.browse_config:
                 return []
-
             action_templates = conn_model.catalog.browse_config.get(
                 "action_templates", {}
             )
-
             tools = []
             for action_name, config in action_templates.items():
                 func_def = {
@@ -171,7 +203,6 @@ class DynamicContextEngine:
                     ),
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 }
-
                 model_name_str = config.get("parameters_model")
                 if model_name_str and conn_model.catalog.schemas_module_path:
                     schema = self._get_schema_for_model(
@@ -182,7 +213,6 @@ class DynamicContextEngine:
                             "properties", {}
                         )
                         func_def["parameters"]["required"] = schema.get("required", [])
-
                 tools.append({"type": "function", "function": func_def})
             return tools
         except Exception as e:
@@ -203,18 +233,14 @@ class DynamicContextEngine:
 
         if not model_path_str.startswith("schemas."):
             return None
-
         class_name = model_path_str.split(".", 1)[1]
         try:
-            # Use a unique module name to avoid import cache collisions
             module_name = f"blueprint_schemas_{Path(schemas_py_file).stem}_{class_name}"
             spec = importlib.util.spec_from_file_location(module_name, schemas_py_file)
             if not spec or not spec.loader:
                 return None
-
             schemas_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(schemas_module)
-
             ParamModel = getattr(schemas_module, class_name)
             if issubclass(ParamModel, BaseModel):
                 schema = ParamModel.model_json_schema()
@@ -226,5 +252,4 @@ class DynamicContextEngine:
                 model=model_path_str,
                 error=str(e),
             )
-
         return None

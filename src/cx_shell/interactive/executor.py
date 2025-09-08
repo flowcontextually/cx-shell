@@ -437,16 +437,25 @@ class CommandExecutor:
         self.app_manager = AppManager()
         self.process_manager = ProcessManager()
         self.compile_manager = CompileManager()
-        self.orchestrator = AgentOrchestrator(state, self)
         self.builtin_commands = {
             "connect": self.execute_connect,
             "connections": self.execute_list_connections,
             "help": self.execute_help,
         }
+        # Do not create the orchestrator immediately.
+        self._orchestrator: Optional[AgentOrchestrator] = None
         grammar_path = Path(__file__).parent / "grammar" / "cx.lark"
         with open(grammar_path, "r", encoding="utf-8") as f:
             self.parser = Lark(f.read(), start="start", parser="lalr")
         self.transformer = CommandTransformer()
+
+    @property
+    def orchestrator(self) -> AgentOrchestrator:
+        """Lazily initializes the AgentOrchestrator on first use."""
+        if self._orchestrator is None:
+            logger.debug("executor.lazy_load", component="AgentOrchestrator")
+            self._orchestrator = AgentOrchestrator(self.state, self)
+        return self._orchestrator
 
     async def execute(
         self, command_text: str, piped_input: Any = None

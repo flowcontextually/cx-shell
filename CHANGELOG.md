@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2025-09-08
+
+### Fixed
+
+- **Application Startup Performance:** Resolved a multi-second startup delay for non-agentic commands (like `cx --version`) by implementing lazy loading for all expensive components (`fastembed`, `tiktoken`, `AgentOrchestrator`). Startup is now nearly instantaneous.
+- **Agent Onboarding Deadlock:** Fixed a critical bug where the `//` translate feature would hang indefinitely on first use when trying to set up an LLM connection. The fix ensures that interactive prompts do not conflict with the terminal's UI spinner.
+- **Agent Reliability:** Greatly improved the reliability of the `AnalystAgent` by providing few-shot examples in its system prompt, preventing `ValidationError` crashes when processing command outputs.
+
 ## [0.5.0] - 2025-09-08
 
 ### Added

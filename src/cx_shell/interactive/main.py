@@ -42,7 +42,6 @@ def start_repl():
 
     async def repl_main():
         nonlocal state, completer, executor
-
         next_prompt_default = ""
 
         while state.is_running:
@@ -58,34 +57,21 @@ def start_repl():
                     state.is_running = False
                     continue
 
-                # --- THIS IS THE DEFINITIVE FIX ---
-                # The REPL loop's only job is to detect the trigger and delegate.
                 if command_text.strip().startswith("//"):
                     goal = command_text.strip().lstrip("//").strip()
 
-                    with console.status("Translating intent to command..."):
-                        try:
-                            # Correctly delegate the ENTIRE workflow to the orchestrator.
-                            # This method now handles the connection check, agent call, etc.
-                            suggestion = (
-                                await executor.orchestrator.prepare_and_run_translate(
-                                    goal
-                                )
-                            )
+                    # Delegate the entire workflow to the orchestrator,
+                    # which now correctly handles spinners and errors.
+                    suggestion = await executor.orchestrator.prepare_and_run_translate(
+                        goal
+                    )
 
-                            # If setup was cancelled or failed, suggestion will be None.
-                            # The orchestrator handles printing user messages.
-                            if suggestion is not None:
-                                next_prompt_default = suggestion
+                    if suggestion is not None:
+                        next_prompt_default = suggestion
 
-                        except Exception as e:
-                            console.print(f"[bold red]Translate Error:[/bold red] {e}")
-
-                    # Loop back to the top to render the new prompt with the suggestion.
                     continue
-                # --- END FIX ---
 
-                # Normal command execution path...
+                # Normal command execution path
                 new_state = await executor.execute(command_text)
 
                 if isinstance(new_state, SessionState):

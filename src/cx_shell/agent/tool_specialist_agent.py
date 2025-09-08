@@ -83,7 +83,6 @@ class ToolSpecialistAgent(BaseSpecialistAgent):
         """
         ### DIAGNOSTIC LOG 3 ###
         # This log proves that the NEW version of THIS method definition is being executed.
-        logger.critical("TOOL_SPECIALIST: Running V2 of generate_command definition.")
 
         if is_translate:
             role_name = "co_pilot"

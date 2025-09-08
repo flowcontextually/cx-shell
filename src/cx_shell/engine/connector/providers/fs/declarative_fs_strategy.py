@@ -4,7 +4,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING, Optional
 
 import structlog
 from jinja2 import Environment
@@ -19,6 +19,7 @@ from ..base import BaseConnectorStrategy
 
 if TYPE_CHECKING:
     from cx_core_schemas.connection import Connection
+    from tiktoken import Encoding
 
 logger = structlog.get_logger(__name__)
 
@@ -86,18 +87,24 @@ class DeclarativeFilesystemStrategy(BaseConnectorStrategy):
 
         # Add the smarter 'now' function to the Jinja environment's global namespace.
         self.jinja_env.globals["now"] = get_now
-        # Initialize the tokenizer once for efficiency.
-        # Use a try-except block for graceful degradation if tiktoken has issues.
-        try:
-            # "cl100k_base" is the encoding used by gpt-4, gpt-3.5-turbo, and embedding models
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-            logger.info("tiktoken tokenizer initialized successfully.")
-        except Exception as e:
-            self.tokenizer = None
-            logger.warn(
-                "Could not initialize tiktoken tokenizer. Token counts will not be available.",
-                error=str(e),
-            )
+        # Initialize the tokenizer to None. It will be loaded on first use.
+        self._tokenizer: Optional["Encoding"] = None
+
+    @property
+    def tokenizer(self) -> Optional["Encoding"]:
+        """Lazily loads the tiktoken tokenizer on first access."""
+        if self._tokenizer is None:
+            try:
+                logger.debug("fs_strategy.lazy_load.begin", component="tiktoken")
+                # "cl100k_base" is the encoding for gpt-4, gpt-3.5-turbo, etc.
+                self._tokenizer = tiktoken.get_encoding("cl100k_base")
+                logger.info("tiktoken tokenizer initialized successfully.")
+            except Exception as e:
+                logger.warn(
+                    "Could not initialize tiktoken tokenizer. Token counts will not be available.",
+                    error=str(e),
+                )
+        return self._tokenizer
 
     async def test_connection(
         self, connection: "Connection", secrets: Dict[str, Any]

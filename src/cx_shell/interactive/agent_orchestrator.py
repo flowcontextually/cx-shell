@@ -58,6 +58,8 @@ class AgentOrchestrator:
         Checks for a required agent connection, moving all blocking I/O to a
         separate thread to prevent deadlocking the main event loop.
         """
+        await self.tool_specialist.load_config_if_needed()
+
         if not self.tool_specialist.agent_config:
             CONSOLE.print(
                 "[bold red]Error:[/bold red] Agent configuration not found or invalid."
@@ -73,9 +75,6 @@ class AgentOrchestrator:
         if alias in self.state.connections:
             return True
 
-        # --- THE DEFINITIVE FIX for the HANG ---
-        # The function below performs synchronous file I/O (.glob(), .read_text()).
-        # It MUST be run in a separate thread to avoid blocking the asyncio event loop.
         def find_compatible_connections_sync() -> List[str]:
             provider_name = alias.replace("cx_", "")
             blueprint_id_pattern = f"community/{provider_name}@"
@@ -92,7 +91,6 @@ class AgentOrchestrator:
             return compatible
 
         compatible_conns = await asyncio.to_thread(find_compatible_connections_sync)
-        # --- END FIX ---
 
         if compatible_conns:
             from prompt_toolkit.completion import WordCompleter
@@ -119,7 +117,6 @@ class AgentOrchestrator:
         CONSOLE.print(
             f"\n[agent] No suitable connection is active. Let's set up a new one for the {feature_name}."
         )
-        # Construct the full blueprint ID for the interactive wizard
         blueprint_id = f"community/{alias.replace('cx_', '')}@1.0.0"
 
         created_conn_id = await self.executor.connection_manager.create_interactive(
@@ -137,43 +134,44 @@ class AgentOrchestrator:
         return alias in self.state.connections
 
     async def prepare_and_run_translate(self, prompt: str) -> Optional[str]:
-        """Orchestrates the 'Translate' (`//`) feature from end to end."""
+        """Orchestrates the 'Translate' (`//`) feature, now managing its own spinner."""
         log = logger.bind(feature="translate", user_prompt=prompt)
         log.info("translate.begin")
 
-        is_ready = await self._ensure_agent_connection("co_pilot")
-        if not is_ready:
-            log.warn(
-                "translate.prerequisite_failed",
-                reason="Connection setup failed or was cancelled.",
-            )
+        try:
+            is_ready = await self._ensure_agent_connection("co_pilot")
+            if not is_ready:
+                return None
+
+            with CONSOLE.status("Translating intent to command..."):
+                log.info("translate.gathering_context")
+                tactical_context = []
+                for alias in self.state.connections:
+                    if not alias.startswith("cx_"):
+                        tactical_context.extend(
+                            self.context_engine.get_tactical_context(alias)
+                        )
+
+                log.info("translate.invoking_agent")
+                temp_beliefs = AgentBeliefs(original_goal=prompt)
+
+                llm_response = await self.tool_specialist.generate_command(
+                    beliefs=temp_beliefs,
+                    active_step_index=0,
+                    tactical_context=tactical_context,
+                    is_translate=True,
+                )
+
+            if llm_response and llm_response.command_options:
+                return llm_response.command_options[0].cx_command
+            else:
+                log.warn(
+                    "translate.failed", reason="LLM returned no valid command options."
+                )
+                return ""
+        except Exception as e:
+            CONSOLE.print(f"[bold red]Translate Error:[/bold red] {e}")
             return None
-
-        log.info("translate.gathering_context")
-        tactical_context = []
-        for alias in self.state.connections:
-            if not alias.startswith("cx_"):
-                tactical_context.extend(self.context_engine.get_tactical_context(alias))
-
-        log.info("translate.invoking_agent")
-        temp_beliefs = AgentBeliefs(original_goal=prompt)
-
-        llm_response = await self.tool_specialist.generate_command(
-            beliefs=temp_beliefs,
-            active_step_index=0,
-            tactical_context=tactical_context,
-            is_translate=True,
-        )
-
-        if llm_response and llm_response.command_options:
-            suggestion = llm_response.command_options[0].cx_command
-            log.info("translate.success", suggestion=suggestion)
-            return suggestion
-        else:
-            log.warn(
-                "translate.failed", reason="LLM returned no valid command options."
-            )
-            return ""
 
     async def start_session(self, goal: str):
         """

@@ -2,11 +2,13 @@
 
 import asyncio
 import functools
+import importlib
 import shutil
 from pathlib import Path
 import sys
 import json
 import logging
+from typing import Optional
 import typer
 from rich.console import Console
 from rich.traceback import Traceback
@@ -22,6 +24,17 @@ from cx_shell.interactive.session import SessionState
 # --- Global Services & Utilities ---
 console = Console()
 logger = structlog.get_logger(__name__)
+
+
+def version_callback(value: bool):
+    """Prints the application version and exits."""
+    if value:
+        try:
+            version = importlib.metadata.version("cx-shell")
+            console.print(f"cx version: {version}")
+        except importlib.metadata.PackageNotFoundError:
+            console.print("cx version: unknown (package not installed)")
+        raise typer.Exit()
 
 
 def setup_logging(verbose: bool):
@@ -114,6 +127,13 @@ def main_callback(
     ctx: typer.Context,
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose DEBUG logging."
+    ),
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        callback=version_callback,
+        is_eager=True,
+        help="Show the application's version and exit.",
     ),
 ):
     """Main entry point. Handles global options and starts the REPL."""
