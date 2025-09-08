@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 from typing import List, Any, Optional
 from dataclasses import dataclass
 from ast import literal_eval
@@ -49,7 +48,7 @@ from .commands import (
 )
 from .session import SessionState
 from ..data.agent_schemas import DryRunResult
-
+from ..utils import get_asset_path
 
 console = Console()
 logger = structlog.get_logger(__name__)
@@ -444,7 +443,7 @@ class CommandExecutor:
         }
         # Do not create the orchestrator immediately.
         self._orchestrator: Optional[AgentOrchestrator] = None
-        grammar_path = Path(__file__).parent / "grammar" / "cx.lark"
+        grammar_path = get_asset_path("../interactive/grammar/cx.lark")
         with open(grammar_path, "r", encoding="utf-8") as f:
             self.parser = Lark(f.read(), start="start", parser="lalr")
         self.transformer = CommandTransformer()

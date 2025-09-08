@@ -20,6 +20,7 @@ from cx_shell.interactive.main import start_repl
 from cx_shell.state import APP_STATE
 from cx_shell.interactive.executor import CommandExecutor
 from cx_shell.interactive.session import SessionState
+from .management.upgrade_manager import UpgradeManager
 
 # --- Global Services & Utilities ---
 console = Console()
@@ -306,3 +307,11 @@ def transform_cmd(ctx: typer.Context):
     """(For scripting) Execute a transformation workflow. Designed for piping."""
     command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
     _run_command_string(command_string)
+
+
+@app.command()
+@handle_exceptions
+def upgrade():
+    """Checks for and installs the latest version of the cx shell."""
+    manager = UpgradeManager()
+    manager.run_upgrade()

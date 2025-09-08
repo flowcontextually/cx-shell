@@ -9,16 +9,33 @@ def resolve_path(path_str: str) -> Path:
     return Path(path_str).expanduser().resolve()
 
 
+# def get_asset_path(relative_path: str) -> Path:
+#     """
+#     Gets the absolute path to a bundled asset, working correctly whether
+#     running from source or as a frozen PyInstaller executable.
+#     """
+#     if getattr(sys, "frozen", False):
+#         # We are running in a bundle
+#         base_path = Path(sys._MEIPASS).joinpath("cx_shell")
+#     else:
+#         # We are running in a normal Python environment
+#         base_path = Path(__file__).parent
+
+#     return (base_path / "assets" / relative_path).resolve()
+
+
 def get_asset_path(relative_path: str) -> Path:
     """
     Gets the absolute path to a bundled asset, working correctly whether
     running from source or as a frozen PyInstaller executable.
     """
     if getattr(sys, "frozen", False):
-        # We are running in a bundle
-        base_path = Path(sys._MEIPASS).joinpath("cx_shell")
+        # We are running in a PyInstaller bundle.
+        # sys._MEIPASS is the path to the temporary directory.
+        base_path = Path(sys._MEIPASS)
     else:
-        # We are running in a normal Python environment
+        # We are running in a normal Python environment.
+        # The path is relative to the `src/cx_shell` directory.
         base_path = Path(__file__).parent
 
     return (base_path / "assets" / relative_path).resolve()

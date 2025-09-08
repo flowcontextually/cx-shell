@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2025-09-08
+
+### Added
+
+- **Self-Upgrade Capability:** Introduced the `cx upgrade` command to allow the application to automatically check for, download, and install the latest version, providing a seamless update experience.
+
+### Fixed
+
+- **PyInstaller Bundling:** Resolved a critical `FileNotFoundError` in the distributed binaries by correctly bundling non-code assets (like the `.lark` grammar file and other `assets`).
+- **Application Startup Performance:** Drastically improved startup time for non-agentic commands by implementing lazy loading for all expensive components (`fastembed`, `tiktoken`, `AgentOrchestrator`).
+- **Version Display:** Fixed an issue where `cx --version` would report "unknown" in the distributed binary.
+
 ## [0.5.1] - 2025-09-08
 
 ### Fixed

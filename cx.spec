@@ -6,7 +6,8 @@ This is configured for a true single-file executable build.
 """
 
 added_files = [
-    ('src/cx_shell/assets', 'cx_shell/assets')
+    ('src/cx_shell/assets', 'cx_shell/assets'),
+    ('src/cx_shell/interactive/grammar', 'cx_shell/interactive/grammar')
 ]
 
 block_cipher = None
