@@ -32,7 +32,7 @@ profiles:
         # temperature: 0.3
         response_format: { "type": "json_object" }
 
-    # The inline co-pilot (`//`) must be extremely fast for a good UX.
+    # The inline assistant (`//`) must be extremely fast for a good UX.
     co_pilot:
       connection_alias: "cx_openai"
       action: "createChatCompletion"

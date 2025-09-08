@@ -36,7 +36,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # By building on an older, stable LTS version of Ubuntu, we ensure
+        # the compiled binary is linked against an older version of glibc,
+        # making it compatible with a much wider range of Linux systems.
+        os: [ubuntu-22.04, macos-latest, windows-latest]
 
     steps:
       - name: Checkout code
