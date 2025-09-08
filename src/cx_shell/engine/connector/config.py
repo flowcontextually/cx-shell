@@ -47,11 +47,6 @@ class ConnectionResolver:
         )
 
     def _ensure_blueprint_exists_locally(self, blueprint_match: re.Match):
-        """
-        Ensures a specific blueprint package exists in the local cache.
-        If it doesn't, it downloads and extracts the zipped release asset
-        from the central GitHub blueprints repository.
-        """
         parts = blueprint_match.groupdict()
         namespace, name, version_from_id = (
             parts["namespace"],
@@ -59,7 +54,7 @@ class ConnectionResolver:
             parts["version"],
         )
 
-        # The canonical local path should NOT include the 'v' prefix.
+        # Canonical local version NEVER has a 'v' prefix.
         version = version_from_id.lstrip("v")
         local_path = BLUEPRINTS_BASE_PATH / namespace / name / version
 
@@ -69,14 +64,9 @@ class ConnectionResolver:
             )
             return
 
-        # --- THIS IS THE FIX ---
-        # The tag name in the GitHub release URL MUST follow the convention:
-        # <namespace>-<name>-v<version>
-        # We ensure the 'v' is present for the tag, even if it wasn't in the blueprint_id.
+        # Tag name for the URL MUST have a 'v' prefix.
         tag_version = f"v{version}"
         tag_name = f"{namespace}-{name}-{tag_version}"
-        # --- END FIX ---
-
         asset_name = f"{name}.zip"
         asset_url = f"https://github.com/{BLUEPRINTS_GITHUB_ORG}/{BLUEPRINTS_GITHUB_REPO}/releases/download/{tag_name}/{asset_name}"
 
@@ -91,6 +81,7 @@ class ConnectionResolver:
 
             with zipfile.ZipFile(zip_content) as zf:
                 for member in zf.infolist():
+                    # This logic correctly handles nested directories inside the zip
                     path_parts = Path(member.filename).parts
                     target_filename = (
                         Path(*path_parts[1:])
@@ -98,7 +89,6 @@ class ConnectionResolver:
                         else Path(member.filename)
                     )
                     target_path = local_path / target_filename
-
                     if not member.is_dir():
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         with open(target_path, "wb") as f:
@@ -107,7 +97,6 @@ class ConnectionResolver:
             logger.info(
                 "Successfully downloaded and extracted blueprint.", path=str(local_path)
             )
-
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise FileNotFoundError(
@@ -233,9 +222,16 @@ class ConnectionResolver:
     def _load_blueprint_package(self, blueprint_match: re.Match) -> Dict[str, Any]:
         """Loads all artifacts from a blueprint package directory in the local cache."""
         parts = blueprint_match.groupdict()
+
+        # --- THIS IS THE FIX ---
+        # The version string from the regex might contain a 'v' (e.g., "v0.1.1").
+        # We MUST strip it here to match the canonical directory path, which is
+        # always stored without the 'v' (e.g., ".../mssql/0.1.1/").
+        version = parts["version"].lstrip("v")
         blueprint_dir = (
-            BLUEPRINTS_BASE_PATH / parts["namespace"] / parts["name"] / parts["version"]
+            BLUEPRINTS_BASE_PATH / parts["namespace"] / parts["name"] / version
         )
+        # --- END FIX ---
 
         blueprint_path = blueprint_dir / "blueprint.cx.yaml"
         source_spec_path = blueprint_dir / "source_spec.json"

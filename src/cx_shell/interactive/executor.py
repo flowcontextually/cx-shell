@@ -186,7 +186,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def variable_command(self, _, cmd_obj):
+    def variable_command(self, cmd_obj):
         logger.debug(
             "Transforming: variable_command", child_type=type(cmd_obj).__name__
         )
@@ -198,7 +198,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def flow_command(self, _, cmd_obj):
+    def flow_command(self, cmd_obj):
         logger.debug("Transforming: flow_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
@@ -208,7 +208,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def query_command(self, _, cmd_obj):
+    def query_command(self, cmd_obj):
         logger.debug("Transforming: query_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
@@ -218,7 +218,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def script_command(self, _, cmd_obj):
+    def script_command(self, cmd_obj):
         logger.debug("Transforming: script_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
@@ -240,7 +240,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def app_command(self, _, cmd_obj):
+    def app_command(self, cmd_obj):
         logger.debug("Transforming: app_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
@@ -250,7 +250,7 @@ class CommandTransformer(Transformer):
         )
         return cmd_obj
 
-    def process_command(self, _, cmd_obj):
+    def process_command(self, cmd_obj):
         logger.debug("Transforming: process_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
@@ -293,27 +293,53 @@ class CommandTransformer(Transformer):
         logger.debug("Creating FlowCommand(list)")
         return FlowCommand("list")
 
-    def flow_run(self, flow_name, arguments=None):
-        logger.debug("Creating FlowCommand(run)")
-        return FlowCommand("run", name=flow_name.value, args=arguments or {})
+    def flow_run(self, *named_args):
+        logger.debug("Creating FlowCommand(run) from named arguments")
+        args_dict = dict(named_args)
+        flow_name = args_dict.pop("--name", None)
+        if not flow_name:
+            raise ValueError(
+                "`flow run` command requires a `--name <flow_name>` argument."
+            )
+
+        # All other arguments are treated as parameters for the flow
+        return FlowCommand("run", name=flow_name, args=args_dict)
 
     def query_list(self):
         logger.debug("Creating QueryCommand(list)")
         return QueryCommand("list")
 
-    def query_run(self, on_alias, query_name, arguments=None):
-        logger.debug("Creating QueryCommand(run)")
+    def query_run(self, *named_args):
+        logger.debug("Creating QueryCommand(run) from named arguments")
+        args_dict = dict(named_args)
+        query_name = args_dict.pop("--name", None)
+        on_alias = args_dict.pop("--on", None)
+
+        if not query_name:
+            raise ValueError(
+                "`query run` command requires a `--name <query_name>` argument."
+            )
+        if not on_alias:
+            raise ValueError("`query run` command requires an `--on <alias>` argument.")
+
         return QueryCommand(
-            "run", name=query_name.value, on_alias=on_alias.value, args=arguments or {}
+            "run", name=query_name, named_args={"on_alias": on_alias, "args": args_dict}
         )
 
     def script_list(self):
         logger.debug("Creating ScriptCommand(list)")
         return ScriptCommand("list")
 
-    def script_run(self, script_name, arguments=None):
-        logger.debug("Creating ScriptCommand(run)")
-        return ScriptCommand("run", name=script_name.value, args=arguments or {})
+    def script_run(self, *named_args):
+        logger.debug("Creating ScriptCommand(run) from named arguments")
+        args_dict = dict(named_args)
+        script_name = args_dict.pop("--name", None)
+        if not script_name:
+            raise ValueError(
+                "`script run` command requires a `--name <script_name>` argument."
+            )
+
+        return ScriptCommand("run", name=script_name, args=args_dict)
 
     def connection_list(self):
         return ConnectionCommand("list")
@@ -331,19 +357,40 @@ class CommandTransformer(Transformer):
 
     def app_list(self):
         logger.debug("Creating AppCommand(list)")
-        return AppCommand("list")
+        # FIX: Provide the required 'args' dictionary.
+        return AppCommand("list", args={})
 
-    def app_install(self, arg):
-        logger.debug("Creating AppCommand(install)")
-        return AppCommand("install", arg.value)
+    def app_install(self, *named_args):
+        logger.debug("Creating AppCommand(install) from named arguments")
+        args_dict = dict(named_args)
+        source_keys = {"--id", "--path", "--url"}
+        provided_keys = set(args_dict.keys())
+        if len(provided_keys.intersection(source_keys)) != 1:
+            raise ValueError(
+                "`app install` requires exactly one of --id, --path, or --url."
+            )
+        return AppCommand("install", args=args_dict)
 
     def app_uninstall(self, arg):
         logger.debug("Creating AppCommand(uninstall)")
-        return AppCommand("uninstall", arg.value)
+        # FIX: Provide the required 'args' dictionary.
+        return AppCommand("uninstall", args={"id": arg.value})
 
     def app_sync(self):
         logger.debug("Creating AppCommand(sync)")
-        return AppCommand("sync")
+        # FIX: Provide the required 'args' dictionary.
+        return AppCommand("sync", args={})
+
+    def app_package(self, arg):
+        logger.debug("Creating AppCommand(package)")
+        # FIX: Provide the required 'args' dictionary.
+        return AppCommand("package", args={"path": arg.value})
+
+    def app_search(self, query=None):
+        logger.debug("Creating AppCommand(search)")
+        query_val = query.value if query else None
+        # FIX: Provide the required 'args' dictionary.
+        return AppCommand("search", args={"query": query_val})
 
     def process_list(self):
         logger.debug("Creating ProcessCommand(list)")
@@ -369,39 +416,39 @@ class CommandTransformer(Transformer):
     def named_argument(self, flag, value):
         processed_value = value
 
-        # If the value is a Token, get its string value
-        if hasattr(value, "value"):
-            processed_value = value.value
+        # --- THIS IS THE FIX ---
+        # If the value is a Token, it's either an ARG, STRING, or NUMBER
+        if hasattr(value, "type"):
+            # For STRING tokens (which can now be '...' or "..."),
+            # use literal_eval to safely un-quote and process escapes.
+            if value.type == "STRING":
+                processed_value = literal_eval(value.value)
+            else:  # For ARG, NUMBER, etc.
+                processed_value = value.value
+        # --- END FIX ---
 
-        # Handle quoted strings from the STRING terminal
-        if (
-            isinstance(processed_value, str)
-            and processed_value.startswith('"')
-            and processed_value.endswith('"')
-        ):
-            processed_value = literal_eval(processed_value)
-        else:
-            # Try to convert unquoted ARGs to numbers if possible
+        # Try to convert unquoted ARGs to numbers if possible
+        try:
+            processed_value = int(processed_value)
+        except (ValueError, TypeError):
             try:
-                # Attempt to convert to int, then float
-                processed_value = int(processed_value)
-            except ValueError:
-                try:
-                    processed_value = float(processed_value)
-                except ValueError:
-                    pass  # Keep as string if it's not a number
+                processed_value = float(processed_value)
+            except (ValueError, TypeError):
+                pass  # Keep as string if it's not a number
 
         logger.debug("Parsing: named_argument", flag=flag.value, value=processed_value)
         return (flag.value, processed_value)
 
     def value(self, v):
-        # This can be noisy, so we'll log the type
         logger.debug("Parsing: value", value_type=type(v).__name__)
         if hasattr(v, "type"):
             if v.type == "JINJA_BLOCK":
                 return v.value
+            # Apply the same robust literal_eval here for consistency
             if v.type in ("STRING", "NUMBER"):
                 return literal_eval(v.value)
+            if v.type == "ARG":
+                return v.value  # ARG is already unquoted
             if v.type == "CNAME":
                 return v.value
         return v
@@ -460,8 +507,8 @@ class CommandExecutor:
         self, command_text: str, piped_input: Any = None
     ) -> Optional[SessionState]:
         """
-        The main entry point for the executor.
-        Parses, transforms, and executes a command string.
+        The main entry point for commands initiated by a HUMAN user from the REPL
+        or the top-level CLI. It orchestrates parsing, execution, and printing.
         """
         if not command_text.strip():
             return None
@@ -469,8 +516,11 @@ class CommandExecutor:
             parsed_tree = self.parser.parse(command_text)
             executable_obj, formatter_options = self.transformer.transform(parsed_tree)
 
+            # --- FIX: Call the internal executor with is_agent_execution=False ---
+            # This tells the execution pipeline that a human is running the command,
+            # so it can optimize the output for readability (e.g., suppress JSON).
             result = await self._execute_executable(
-                executable_obj, piped_input=piped_input
+                executable_obj, piped_input=piped_input, is_agent_execution=False
             )
 
             if isinstance(result, SessionState):
@@ -478,21 +528,7 @@ class CommandExecutor:
 
             self._print_result(result, executable_obj, formatter_options)
 
-        # except LarkError as e:
-        #     # This handles PARSING errors (invalid syntax)
-        #     context = e.get_context(command_text, span=40)
-        #     console.print(
-        #         f"[bold red]Syntax Error:[/bold red] Invalid syntax.\n{context}"
-        #     )
-        # except VisitError as e:
-        #     # This handles TRANSFORMING errors (mismatch between grammar and transformer)
-        #     console.print(
-        #         f"[bold red]Grammar Mismatch Error:[/bold red] The command was parsed, but the executor doesn't know how to handle the rule '{e.rule}'."
-        #     )
-        #     console.print("[dim]This is an internal application error.[/dim]")
-
         except Exception as e:
-            # This handles EXECUTION errors (runtime errors from commands)
             original_exc = getattr(e, "orig_exc", e)
             console.print(
                 f"[bold red]{type(original_exc).__name__}:[/bold red] {original_exc}"
@@ -501,29 +537,36 @@ class CommandExecutor:
         return None
 
     async def _execute_executable(
-        self, executable: Any, piped_input: Any = None
+        self, executable: Any, piped_input: Any = None, is_agent_execution: bool = False
     ) -> Any:
         """
-        Recursively executes any executable object (pipeline, assignment, command, etc.)
-        and returns the final data result. This is the core orchestration method.
+        Recursively executes any command object, tracking whether the command
+        was initiated by a human or the agent to tailor the output accordingly.
         """
-        # --- 1. Handle Structural/Recursive Executables ---
+        # --- Handle Structural/Recursive Executables ---
         if isinstance(executable, PipelineCommand):
             current_input = piped_input
             for item in executable.commands:
+                # Propagate the agent context flag through the pipeline
                 current_input = await self._execute_executable(
-                    item, piped_input=current_input
+                    item,
+                    piped_input=current_input,
+                    is_agent_execution=is_agent_execution,
                 )
                 if isinstance(current_input, dict) and "error" in current_input:
                     break
             return current_input
 
         if isinstance(executable, AssignmentCommand):
+            # Propagate the flag to the command being run
             result = await self._execute_executable(
-                executable.command_to_run, piped_input
+                executable.command_to_run,
+                piped_input,
+                is_agent_execution=is_agent_execution,
             )
             if not (isinstance(result, dict) and "error" in result):
                 self.state.variables[executable.var_name] = result
+            # Don't return the full result object for assignments, just a confirmation.
             return (
                 result
                 if isinstance(result, dict) and "error" in result
@@ -537,9 +580,9 @@ class CommandExecutor:
                 raise ValueError("Cannot pipe data into a variable lookup.")
             return self.state.variables[executable.var_name]
 
-        # --- 2. Dispatch All Command Types ---
+        # --- Dispatch All Command Types ---
         if isinstance(executable, Command):
-            # If it's a 'run' subcommand or a dot-notation command, it's a "heavy" data-producing operation.
+            # Data-producing commands (e.g., `flow run`, `gh.getUser`) are heavy operations.
             if getattr(executable, "subcommand", None) == "run" or isinstance(
                 executable, (DotNotationCommand, PositionalArgActionCommand)
             ):
@@ -550,15 +593,17 @@ class CommandExecutor:
                             self.state, self.service, executable.name, executable.args
                         )
                     if isinstance(executable, QueryCommand):
+                        on_alias = executable.named_args.get("on_alias")
                         status.update(
-                            f"Running query '{executable.name}' on '{executable.on_alias}'..."
+                            f"Running query '{executable.name}' on '{on_alias}'..."
                         )
+                        query_args = executable.named_args.get("args", {})
                         return await self.query_manager.run_query(
                             self.state,
                             self.service,
                             executable.name,
-                            executable.on_alias,
-                            executable.args,
+                            on_alias,
+                            query_args,
                         )
                     if isinstance(executable, ScriptCommand):
                         status.update(f"Running script '{executable.name}'...")
@@ -575,87 +620,96 @@ class CommandExecutor:
                         return await executable.execute(
                             self.state, self.service, status, piped_input=piped_input
                         )
-
-            # Otherwise, it's a "lightweight" management command.
             else:
-                return await self._dispatch_management_command(executable)
+                # Lightweight management commands are dispatched here.
+                return await self._dispatch_management_command(
+                    executable, is_agent_execution
+                )
 
-        # This line should now be unreachable if the grammar is correct, but serves as a safety net.
         raise TypeError(f"Cannot execute object of type: {type(executable).__name__}")
 
-    async def _dispatch_management_command(self, command: Command) -> Any:
-        """Routes all non-data-producing management commands to their respective handlers."""
+    async def _dispatch_management_command(
+        self, command: Command, is_agent_execution: bool
+    ) -> Any:
+        """
+        Routes management commands, returning a result tailored to the execution context
+        (human-readable for users, machine-readable for the agent).
+        """
+        command_prints_own_output = False
+        simple_confirmation_message = None
 
-        if isinstance(command, CompileCommand):
-            # --- THIS IS THE FIX ---
-            # Use the underscore version of the keys to match what the
-            # CommandTransformer produces.
-            spec_url = command.named_args.get("spec_url")
-            name = command.named_args.get("name")
-            version = command.named_args.get("version")
-            # --- END FIX ---
+        # --- Command Logic Dispatch ---
 
-            # Add a check for the required argument
-            if not spec_url or not name or not version:
-                raise ValueError(
-                    "The compile command requires --spec-url, --name, and --version arguments."
-                )
-
-            await self.compile_manager.run_compile(
-                spec_source=spec_url,
-                name=name,
-                version=version,
-                namespace=command.named_args.get("namespace", "user"),
-            )
-
-        # --- Built-in Commands (connect, help, etc.) ---
-        elif isinstance(command, BuiltinCommand):
+        if isinstance(command, BuiltinCommand):
+            command_prints_own_output = True
             handler = self.builtin_commands.get(command.command)
             if handler:
-                return (
-                    await handler(command.args)
-                    if asyncio.iscoroutinefunction(handler)
-                    else handler(command.args)
-                )
+                await handler(command.args) if asyncio.iscoroutinefunction(
+                    handler
+                ) else handler(command.args)
 
-        # --- Connection Management ---
         elif isinstance(command, ConnectionCommand):
             if command.subcommand == "list":
                 self.connection_manager.list_connections()
+                command_prints_own_output = True
             elif command.subcommand == "create":
-                blueprint_id = command.named_args.get("blueprint")
-                await self.connection_manager.create_interactive(blueprint_id)
+                await self.connection_manager.create_interactive(
+                    command.named_args.get("blueprint")
+                )
+                command_prints_own_output = True
 
-        # --- Session Management ---
-        elif isinstance(command, SessionCommand):
+        elif isinstance(command, AppCommand):
+            command_prints_own_output = True
             if command.subcommand == "list":
-                self.session_manager.list_sessions()
-            elif command.subcommand == "status":
-                self.session_manager.show_status(self.state)
+                await self.app_manager.list_installed_apps()
+            elif command.subcommand == "install":
+                await self.app_manager.install(command.args)
+            elif command.subcommand == "uninstall":
+                await self.app_manager.uninstall(command.args["id"])
+            elif command.subcommand == "package":
+                await self.app_manager.package(command.args["path"])
+            elif command.subcommand == "search":
+                await self.app_manager.search(command.args["query"])
+
+        elif isinstance(command, (FlowCommand, QueryCommand, ScriptCommand)):
+            if command.subcommand == "list":
+                command_prints_own_output = True
+                if isinstance(command, FlowCommand):
+                    self.flow_manager.list_flows()
+                elif isinstance(command, QueryCommand):
+                    self.query_manager.list_queries()
+                elif isinstance(command, ScriptCommand):
+                    self.script_manager.list_scripts()
+
+        elif isinstance(command, SessionCommand):
+            if command.subcommand in ["list", "status"]:
+                command_prints_own_output = True
+                if command.subcommand == "list":
+                    self.session_manager.list_sessions()
+                elif command.subcommand == "status":
+                    self.session_manager.show_status(self.state)
             elif command.subcommand == "save":
-                return self.session_manager.save_session(self.state, command.arg)
+                simple_confirmation_message = self.session_manager.save_session(
+                    self.state, command.arg
+                )
             elif command.subcommand == "rm":
-                return await self.session_manager.delete_session(command.arg)
+                simple_confirmation_message = await self.session_manager.delete_session(
+                    command.arg
+                )
             elif command.subcommand == "load":
                 return self.session_manager.load_session(command.arg)
 
-        # --- Variable Management ---
         elif isinstance(command, VariableCommand):
             if command.subcommand == "list":
                 self.variable_manager.list_variables(self.state)
+                command_prints_own_output = True
             elif command.subcommand == "rm":
-                return self.variable_manager.delete_variable(self.state, command.arg)
+                simple_confirmation_message = self.variable_manager.delete_variable(
+                    self.state, command.arg
+                )
 
-        # --- Asset Listing ---
-        elif isinstance(command, FlowCommand) and command.subcommand == "list":
-            self.flow_manager.list_flows()
-        elif isinstance(command, QueryCommand) and command.subcommand == "list":
-            self.query_manager.list_queries()
-        elif isinstance(command, ScriptCommand) and command.subcommand == "list":
-            self.script_manager.list_scripts()
-
-        # --- Asset Interaction ---
         elif isinstance(command, OpenCommand):
+            command_prints_own_output = True
             handler = command.named_args.get("in", "default")
             on_alias = command.named_args.get("on")
             await self.open_manager.open_asset(
@@ -667,58 +721,89 @@ class CommandExecutor:
                 on_alias,
             )
 
-        # --- Application Management ---
-        elif isinstance(command, AppCommand):
-            if command.subcommand == "list":
-                await self.app_manager.list_installed_apps()
-            elif command.subcommand == "install":
-                with console.status(f"Installing application '{command.arg}'..."):
-                    await self.app_manager.install(command.arg)
-            elif command.subcommand == "uninstall":
-                await self.app_manager.uninstall(command.arg)
-            else:
-                console.print(
-                    f"[yellow]'{command.subcommand}' command is not yet fully implemented.[/yellow]"
-                )
-
-        # --- Agent & Process Management ---
-        elif isinstance(command, AgentCommand):
-            await self.orchestrator.start_session(command.goal)
         elif isinstance(command, ProcessCommand):
+            command_prints_own_output = True
             if command.subcommand == "list":
                 self.process_manager.list_processes()
             elif command.subcommand == "logs":
                 self.process_manager.get_logs(command.arg, command.follow)
 
-        # --- Inspection ---
-        elif isinstance(command, InspectCommand):
-            return await command.execute(self.state, self.service, None)
-
-        else:
-            console.print(
-                f"[bold red]Error:[/bold red] Unknown management command '{type(command).__name__}'."
+        elif isinstance(command, CompileCommand):
+            command_prints_own_output = True
+            await self.compile_manager.run_compile(
+                spec_source=command.named_args.get("spec-url"),
+                name=command.named_args.get("name"),
+                version=command.named_args.get("version"),
+                namespace=command.named_args.get("namespace", "user"),
             )
 
-        # Most management commands do not return data, but we return a success
-        # message to give the AnalystAgent a concrete observation.
-        return {
-            "status": "success",
-            "message": f"Management command '{type(command).__name__}' executed successfully.",
-        }
+        elif isinstance(command, AgentCommand):
+            command_prints_own_output = True
+            await self.orchestrator.start_session(command.goal)
+
+        elif isinstance(command, InspectCommand):
+            # Inspect is special: it returns data to be formatted by _print_result,
+            # so it does not handle its own output.
+            return await command.execute(self.state, self.service, None)
+
+        # --- Context-Aware Return Logic ---
+
+        if is_agent_execution:
+            return {
+                "status": "success",
+                "message": f"Management command '{type(command).__name__}' executed successfully.",
+            }
+        else:  # Human execution
+            if simple_confirmation_message:
+                return simple_confirmation_message
+            if command_prints_own_output:
+                return None
+
+            # Fallback for any other case
+            return {"status": "success", "message": "Command executed."}
 
     def _print_result(self, result: Any, executable: Any, options: dict | None = None):
-        """Handles the final rendering of a command's result to the console."""
+        """
+        Handles the final rendering of a command's result to the console.
+        This method is the final stage of the execution pipeline and is responsible
+        for all user-facing output, intelligently suppressing redundant messages.
+        """
+        # --- Stage 1: Handle Terminal Cases & UX-Specific Suppression ---
         if result is None:
             return
+
         options = options or {}
 
-        # 1. Handle simple string confirmation messages from management commands.
+        # Suppress the generic success JSON for commands that print their own rich output.
+        is_generic_success_message = (
+            isinstance(result, dict)
+            and result.get("status") == "success"
+            and "executed successfully" in result.get("message", "")
+        )
+        is_list_command = (
+            hasattr(executable, "subcommand") and executable.subcommand == "list"
+        )
+        is_connections_command = (
+            isinstance(executable, BuiltinCommand)
+            and executable.command == "connections"
+        )
+
+        # If the command was a 'list'-style command AND the user has not added any
+        # formatters (like --query), we assume the manager has already printed a
+        # table, so we suppress the final JSON to avoid clutter.
+        if (
+            is_generic_success_message
+            and (is_list_command or is_connections_command)
+            and not options
+        ):
+            return
+
+        # Handle simple string confirmation messages (e.g., from session save/delete).
         if isinstance(result, str):
-            # This catches "Variable 'x' set", "Session 'y' saved", etc.
             console.print(f"[bold green]✓[/bold green] {result}")
             return
 
-        # 2. Handle the special panel format for the 'inspect' command.
+        # Handle the special panel format for the 'inspect' command.
         if isinstance(executable, InspectCommand):
             summary = result
             panel_content = (
@@ -746,24 +831,27 @@ class CommandExecutor:
             )
             return
 
-        # 3. Handle generic runtime errors that may have been passed through.
+        # Handle generic runtime errors that may have been passed through the pipeline.
         if isinstance(result, dict) and "error" in result:
             console.print(f"[bold red]Runtime Error:[/bold red] {result['error']}")
             return
 
-        # 4. Intelligently unpack the raw result to get to the core data payload.
-        data_to_process = result
-        if isinstance(data_to_process, dict) and "results" in data_to_process:
-            data_to_process = data_to_process["results"]
-        if isinstance(data_to_process, dict) and "data" in data_to_process:
-            data_to_process = data_to_process["data"]
-        if isinstance(data_to_process, dict) and "content" in data_to_process:
-            try:
-                data_to_process = json.loads(data_to_process["content"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        # --- Stage 2: Data Processing & Filtering ---
 
-        # 5. Apply the JMESPath query to the unpacked data.
+        # Intelligently unpack the raw result to get to the core data payload.
+        data_to_process = result
+        if isinstance(data_to_process, dict):
+            if "results" in data_to_process:
+                data_to_process = data_to_process["results"]
+            elif "data" in data_to_process:
+                data_to_process = data_to_process["data"]
+            elif "content" in data_to_process:
+                try:
+                    data_to_process = json.loads(data_to_process["content"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Apply the JMESPath query to the unpacked data before any rendering.
         data_to_render = data_to_process
         if options.get("query"):
             try:
@@ -772,54 +860,34 @@ class CommandExecutor:
                 console.print(f"[bold red]JMESPath Error:[/bold red] {e}")
                 return
 
-        # 6. Render the final, processed data based on the output mode.
+        # --- Stage 3: Output Rendering ---
+
         output_mode = options.get("output_mode", "default")
 
+        # Render as a table if requested and if the data is a list of objects.
         if (
             output_mode == "table"
             and isinstance(data_to_render, list)
             and data_to_render
         ):
-            # Check for list of dicts or list of lists
-            is_list_of_dicts = all(isinstance(i, dict) for i in data_to_render)
-            is_list_of_lists = all(isinstance(i, list) for i in data_to_render)
-
-            if is_list_of_dicts or is_list_of_lists:
-                table = Table(title="Data View", box=box.ROUNDED)
-                headers = options.get("columns")
-
-                if is_list_of_dicts:
-                    if headers is None:
-                        headers = list(data_to_render[0].keys())
-                    for header in headers:
-                        table.add_column(str(header), style="cyan", overflow="fold")
-                    for row in data_to_render:
-                        table.add_row(*(str(row.get(h, "")) for h in headers))
-
-                elif is_list_of_lists:
-                    if headers is None:
-                        console.print(
-                            "[bold red]Error:[/bold red] To display this data as a table, you must provide column names using the `--columns` flag."
-                        )
-                        return
-                    if len(headers) != len(data_to_render[0]):
-                        console.print(
-                            f"[bold red]Error:[/bold red] The number of columns provided ({len(headers)}) does not match the data structure ({len(data_to_render[0])})."
-                        )
-                        return
-                    for header in headers:
-                        table.add_column(str(header), style="cyan", overflow="fold")
-                    for row in data_to_render:
-                        table.add_row(*(str(item) for item in row))
-
+            if all(isinstance(i, dict) for i in data_to_render):
+                table = Table(title="Data View", box=box.ROUNDED, show_lines=True)
+                headers = options.get("columns") or list(data_to_render[0].keys())
+                for header in headers:
+                    table.add_column(str(header), style="cyan", overflow="fold")
+                for row in data_to_render:
+                    table.add_row(*(str(row.get(h, "")) for h in headers))
                 console.print(table)
                 return
 
+        # Default to printing pretty JSON for all other data-producing cases.
+        # This also handles the generic success message if it wasn't suppressed above.
         try:
             formatted_json = json.dumps(data_to_render, indent=2, default=str)
             syntax = Syntax(formatted_json, "json", theme="monokai", line_numbers=True)
             console.print(syntax)
         except (TypeError, OverflowError):
+            # Fallback for non-serializable objects (should be rare).
             console.print(Pretty(data_to_render))
 
     async def _dispatch_builtin(self, command: Command) -> Any:

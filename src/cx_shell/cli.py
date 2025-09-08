@@ -1,28 +1,26 @@
-# /home/dpwanjala/repositories/cx-shell/src/cx_shell/cli.py
-
 import asyncio
 import functools
-import importlib
-import shutil
-from pathlib import Path
-import sys
+import importlib.metadata
 import json
 import logging
+import shlex
+import shutil
+import sys
+from pathlib import Path
 from typing import Optional
+
+import structlog
 import typer
+import yaml
 from rich.console import Console
 from rich.traceback import Traceback
-import yaml
-import structlog
 
-# --- Local Application Imports ---
-from cx_shell.interactive.main import start_repl
-from cx_shell.state import APP_STATE
 from cx_shell.interactive.executor import CommandExecutor
+from cx_shell.interactive.main import start_repl
 from cx_shell.interactive.session import SessionState
-from .management.upgrade_manager import UpgradeManager
+from cx_shell.management.upgrade_manager import UpgradeManager
+from cx_shell.state import APP_STATE
 
-# --- Global Services & Utilities ---
 console = Console()
 logger = structlog.get_logger(__name__)
 
@@ -40,7 +38,6 @@ def version_callback(value: bool):
 
 def setup_logging(verbose: bool):
     log_level = logging.DEBUG if verbose else logging.INFO
-
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -48,7 +45,6 @@ def setup_logging(verbose: bool):
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.format_exc_info,
     ]
-
     structlog.configure(
         processors=shared_processors
         + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
@@ -56,19 +52,16 @@ def setup_logging(verbose: bool):
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
         processor=structlog.dev.ConsoleRenderer(),
     )
-
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(formatter)
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
     root_logger.setLevel(log_level)
-
     if verbose:
         logging.getLogger("httpx").setLevel(logging.DEBUG)
 
@@ -96,6 +89,16 @@ def handle_exceptions(func):
     return wrapper
 
 
+def _reconstruct_command_string(command_name: str, args: list[str]) -> str:
+    """
+    Safely reconstructs a command string from a list of arguments,
+    quoting any arguments that contain spaces or special characters to
+    ensure they are parsed correctly by the internal Lark parser.
+    """
+    quoted_args = [shlex.quote(arg) for arg in args]
+    return f"{command_name} {' '.join(quoted_args)}"
+
+
 def _run_command_string(command: str):
     """Instantiates a temporary executor and runs a single command string."""
     logger.info(
@@ -114,7 +117,6 @@ def _run_command_string(command: str):
     asyncio.run(executor.execute(command, piped_input=piped_input))
 
 
-# --- Main Typer Application ---
 app = typer.Typer(
     name="cx",
     help="The Contextual Shell: A declarative, multi-stage automation platform.",
@@ -144,7 +146,6 @@ def main_callback(
         start_repl()
 
 
-# --- Standalone Command ---
 @app.command()
 @handle_exceptions
 def init():
@@ -208,9 +209,15 @@ def init():
     console.print("Run `cx` to start the interactive shell.")
 
 
+@app.command()
+@handle_exceptions
+def upgrade():
+    """Checks for and installs the latest version of the cx shell."""
+    manager = UpgradeManager()
+    manager.run_upgrade()
+
+
 # --- Pass-Through Command Groups ---
-# Each function defines a top-level command that passes all its arguments
-# to the unified executor.
 
 
 @app.command(
@@ -220,7 +227,7 @@ def init():
 @handle_exceptions
 def connection_cmd(ctx: typer.Context):
     """Manage local connections (e.g., list, create)."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -230,7 +237,7 @@ def connection_cmd(ctx: typer.Context):
 @handle_exceptions
 def app_cmd(ctx: typer.Context):
     """Discover, install, and manage Contextually Applications."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -240,7 +247,7 @@ def app_cmd(ctx: typer.Context):
 @handle_exceptions
 def flow_cmd(ctx: typer.Context):
     """List and run reusable .flow.yaml workflows."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -250,7 +257,7 @@ def flow_cmd(ctx: typer.Context):
 @handle_exceptions
 def query_cmd(ctx: typer.Context):
     """List and run reusable .sql queries."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -261,7 +268,7 @@ def query_cmd(ctx: typer.Context):
 @handle_exceptions
 def script_cmd(ctx: typer.Context):
     """List and run reusable .py scripts."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -272,7 +279,7 @@ def script_cmd(ctx: typer.Context):
 @handle_exceptions
 def process_cmd(ctx: typer.Context):
     """Manage long-running background processes."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -283,7 +290,7 @@ def process_cmd(ctx: typer.Context):
 @handle_exceptions
 def compile_cmd(ctx: typer.Context):
     """Compiles an API specification into a `cx` blueprint."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -294,7 +301,7 @@ def compile_cmd(ctx: typer.Context):
 @handle_exceptions
 def extract_cmd(ctx: typer.Context):
     """(For scripting) Execute an extraction workflow. Designed for piping."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
 
 
@@ -305,13 +312,5 @@ def extract_cmd(ctx: typer.Context):
 @handle_exceptions
 def transform_cmd(ctx: typer.Context):
     """(For scripting) Execute a transformation workflow. Designed for piping."""
-    command_string = f"{ctx.command.name} {' '.join(ctx.args)}"
+    command_string = _reconstruct_command_string(ctx.command.name, ctx.args)
     _run_command_string(command_string)
-
-
-@app.command()
-@handle_exceptions
-def upgrade():
-    """Checks for and installs the latest version of the cx shell."""
-    manager = UpgradeManager()
-    manager.run_upgrade()

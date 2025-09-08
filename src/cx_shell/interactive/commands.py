@@ -1,5 +1,3 @@
-# /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/commands.py
-
 from abc import ABC
 from pathlib import Path
 from typing import Any, List, Dict
@@ -434,11 +432,11 @@ class OpenCommand(Command):
 
 
 class AppCommand(Command):
-    """Represents an application management command, e.g., `app install ...`."""
+    """Represents an application management command."""
 
-    def __init__(self, subcommand: str, arg: str | None = None):
+    def __init__(self, subcommand: str, args: Dict[str, Any]):
         self.subcommand = subcommand
-        self.arg = arg
+        self.args = args
 
     async def execute(
         self,

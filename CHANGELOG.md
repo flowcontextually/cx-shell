@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2025-09-08
+
+### Added
+
+- **Application Lifecycle Management:** Implemented the full suite of `cx app` commands (`install`, `uninstall`, `list`, `package`, `search`) for managing self-contained, distributable application packages.
+- **Multi-Source Installation:** The `app install` command now robustly handles installation from the public registry (via `--id`), local archive files (via `--path`), and direct download URLs (via `--url`).
+- **Interactive App Onboarding:** The `cx app install` command now features an interactive wizard that guides users through setting up all required connections declared in an application's manifest.
+- **Installation Manifest:** The shell now maintains a local manifest (`~/.cx/apps.json`) to track installed applications and their associated assets, enabling clean uninstallation.
+
+### Fixed
+
+- **Parser Robustness:** Refactored the shell's Lark grammar and transformer to consistently use named arguments (`--flag value`) for all complex commands, eliminating parsing ambiguity with special characters in arguments like URLs.
+- **CLI Output Polish:** The presentation layer now intelligently suppresses redundant JSON status messages for commands that produce their own rich output (like tables), creating a cleaner user experience.
+
 ## [0.5.2] - 2025-09-08
 
 ### Added
