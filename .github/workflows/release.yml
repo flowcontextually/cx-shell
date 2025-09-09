@@ -36,11 +36,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # By building on an older, stable LTS version of Ubuntu, we ensure
-        # the compiled binary is linked against an older version of glibc,
-        # making it compatible with a much wider range of Linux systems.
-        os: [ubuntu-22.04, macos-latest, windows-latest]
-
+        # By building on an even older LTS version of Ubuntu, we ensure
+        # maximum backward compatibility for the glibc linker.
+        os: [ubuntu-20.04, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
