@@ -116,9 +116,5 @@ jobs:
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          # Use the changelog entry for this tag as the release notes
-          body_path: CHANGELOG.md
-          # This action can automatically find the release notes for the
-          # current tag from the changelog.
           generate_release_notes: true
           files: release-assets/**/*
