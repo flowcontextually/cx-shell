@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2025-09-09
+
+### Added
+
+- **Multi-Format Blueprint Compiler:** The `cx compile` command is now powered by a new, extensible dispatcher/adapter architecture, making it easy to add support for new API specification formats in the future.
+- **Google API Discovery Support:** The compiler now includes an adapter for Google API Discovery Documents, enabling the creation of blueprints for services like Google Drive, Calendar, and Gmail.
+
+### Changed
+
+- **Architectural Refactoring:** The compiler logic was refactored from a single monolithic script into a clean, modular system (`spec_compiler.py` dispatcher with `openapi_adapter.py` and `google_discovery_adapter.py`).
+- **Improved Portability:** Introduced the `app-asset:` URI scheme and updated the `ScriptEngine` to correctly resolve asset paths (e.g., `.sql` files) within installed applications, making flows fully portable and independent of the current working directory.
+
+### Fixed
+
+- **Pydantic Schema Generation:** Fixed multiple bugs in the OpenAPI adapter that caused it to fail on complex specifications (e.g., Microsoft Graph). The compiler now correctly generates classes for all schema objects and resolves all forward references.
+- **SQL `IN` Clause:** Resolved a critical `sqlalchemy.exc.ArgumentError` by implementing manual parameter expansion for list values in SQL `IN` clauses, ensuring compatibility with `pyodbc` and other restrictive drivers.
+
 ## [0.5.6] - 2025-09-09
 
 ### Added

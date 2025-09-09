@@ -14,21 +14,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install uv
         run: pip install uv
-
       - name: Create virtual environment
         run: uv venv
-
       - name: Install dependencies
         run: uv pip install -e .[all]
-
       - name: Run Pytest
         run: uv run pytest
 
@@ -38,15 +33,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # Use ubuntu-latest for the runner host to ensure fast startup,
-        # but perform the actual build inside a Docker container for Linux.
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --- Standard Build Steps for macOS and Windows ---
       - name: Set up Python (macOS & Windows)
         if: runner.os != 'Linux'
         uses: actions/setup-python@v5
@@ -61,19 +53,14 @@ jobs:
           uv pip install -e .[all]
           uv run pyinstaller cx.spec
 
-      # --- Docker-based Build for Linux for Maximum Compatibility ---
       - name: Build for Linux using Docker
         if: runner.os == 'Linux'
         run: |
-          echo "Starting Linux build inside a python:3.12-slim-bullseye container..."
           docker run --rm \
-            -v "$(pwd)":/work \
-            -w /work \
-            python:3.12-slim-bullseye \
+            -v "$(pwd)":/work -w /work python:3.12-slim-bullseye \
             bash -c "apt-get update && apt-get install -y git binutils && pip install uv && uv venv && uv pip install -e .[all] && uv run pyinstaller cx.spec"
 
-      # --- Archive the Executable ---
-      - name: Prepare artifact name and path
+      - name: Prepare and Archive Executable
         id: prepare_artifact
         shell: bash
         run: |
@@ -85,16 +72,17 @@ jobs:
             ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-amd64.zip"
             # Use PowerShell's built-in compression, which is guaranteed to be on Windows runners.
             powershell -Command "Compress-Archive -Path '${EXECUTABLE_PATH}' -DestinationPath '${ARCHIVE_NAME}'"
-            echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
-            echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
           else
             EXECUTABLE_PATH="dist/cx"
             ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-x86_64.tar.gz"
-            tar -czvf $ARCHIVE_NAME -C dist cx
-            echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
-            echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+            # The -C flag tells tar to change to the 'dist' directory before archiving,
+            # which ensures 'cx' is at the root of the tarball.
+            tar -czvf ${ARCHIVE_NAME} -C dist cx
           fi
 
+          # Set the output for the next step
+          echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
+          echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
       - name: Upload artifact for release job
         uses: actions/upload-artifact@v4
         with:
