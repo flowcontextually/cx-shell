@@ -8,7 +8,7 @@ from typing import Any, Dict, List, TYPE_CHECKING
 import structlog
 
 from ..base import BaseConnectorStrategy
-from .....utils import get_asset_path
+from .....utils import get_assets_root
 from .....data.agent_schemas import DryRunResult
 from cx_core_schemas.connection import Connection
 
@@ -26,46 +26,48 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
     strategy_key = "python-sandboxed"
 
     async def test_connection(
-        self, connection: "Connection", secrets: Dict[str, Any]
+        self, connection: Connection, secrets: Dict[str, Any]
     ) -> bool:
         return True
 
     @asynccontextmanager
-    async def get_client(self, connection: "Connection", secrets: Dict[str, Any]):
+    async def get_client(self, connection: Connection, secrets: Dict[str, Any]):
         yield None
 
     async def run_python_script(
         self,
-        connection: "Connection",
+        connection: Connection,
         action_params: Dict[str, Any],
-        script_input: Dict[str, Any],  # <-- THIS IS THE FIX
+        script_input: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Executes a specified Python script as a separate process.
-
-        Args:
-            connection: The connection model (unused for this strategy).
-            action_params: The validated parameters from the RunPythonScriptAction.
-            script_input: The context from the overall script run (unused by this action).
+        Executes a specified Python script as a separate process, correctly
+        resolving paths for both system assets and user-provided scripts.
         """
-
         script_path_str = action_params["script_path"]
 
+        script_path_obj: Path
         if script_path_str.startswith("asset:"):
             relative_path = script_path_str.split(":", 1)[1]
-            script_path = get_asset_path(relative_path)
+            # Get the assets root and build the path from there.
+            assets_root = get_assets_root()
+            script_path_obj = assets_root / relative_path
         else:
-            script_path = Path(script_path_str)
+            script_path_obj = Path(script_path_str).expanduser().resolve()
+
+        final_script_path = str(script_path_obj)
 
         input_data = action_params["input_data_json"]
         python_executable = sys.executable
 
-        log = logger.bind(script_path=script_path, python_executable=python_executable)
+        log = logger.bind(
+            script_path=final_script_path, python_executable=python_executable
+        )
         log.info("Executing sandboxed Python script.")
 
         try:
             process = subprocess.run(
-                [python_executable, script_path],
+                [python_executable, final_script_path],
                 input=input_data,
                 capture_output=True,
                 text=True,
@@ -79,14 +81,18 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
 
         except subprocess.CalledProcessError as e:
             log.error("Python script failed.", stderr=e.stderr.strip())
-            raise IOError(f"Execution of script '{script_path}' failed: {e.stderr}")
+            raise IOError(
+                f"Execution of script '{final_script_path}' failed: {e.stderr}"
+            )
         except json.JSONDecodeError as e:
             log.error(
                 "Failed to parse JSON output from Python script.",
                 error=str(e),
                 stdout=process.stdout,
             )
-            raise ValueError(f"Script '{script_path}' produced invalid JSON output.")
+            raise ValueError(
+                f"Script '{final_script_path}' produced invalid JSON output."
+            )
         except Exception as e:
             log.error(
                 "An unexpected error occurred during Python script execution.",
@@ -94,24 +100,22 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
             )
             raise
 
-    # --- Fulfilling the Contract ---
     async def browse_path(
-        self, path_parts: List[str], connection: "Connection", secrets: Dict[str, Any]
+        self, path_parts: List[str], connection: Connection, secrets: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     async def get_content(
-        self, path_parts: List[str], connection: "Connection", secrets: Dict[str, Any]
+        self, path_parts: List[str], connection: Connection, secrets: Dict[str, Any]
     ) -> "VfsFileContentResponse":
         raise NotImplementedError
 
     async def dry_run(
         self,
-        connection: "Connection",
+        connection: Connection,
         secrets: Dict[str, Any],
         action_params: Dict[str, Any],
     ) -> "DryRunResult":
-        """This strategy's actions are validated at execution time. The dry run passes by default."""
         return DryRunResult(
             indicates_failure=False,
             message="Dry run successful by default for this strategy.",

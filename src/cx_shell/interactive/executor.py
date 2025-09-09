@@ -48,7 +48,7 @@ from .commands import (
 )
 from .session import SessionState
 from ..data.agent_schemas import DryRunResult
-from ..utils import get_asset_path
+from ..utils import get_pkg_root
 
 console = Console()
 logger = structlog.get_logger(__name__)
@@ -293,17 +293,34 @@ class CommandTransformer(Transformer):
         logger.debug("Creating FlowCommand(list)")
         return FlowCommand("list")
 
+    # def flow_run(self, *named_args):
+    #     logger.debug("Creating FlowCommand(run) from named arguments")
+    #     args_dict = dict(named_args)
+    #     flow_name = args_dict.pop("--name", None)
+    #     if not flow_name:
+    #         raise ValueError(
+    #             "`flow run` command requires a `--name <flow_name>` argument."
+    #         )
+
+    #     # All other arguments are treated as parameters for the flow
+    #     return FlowCommand("run", name=flow_name, args=args_dict)
+
     def flow_run(self, *named_args):
         logger.debug("Creating FlowCommand(run) from named arguments")
-        args_dict = dict(named_args)
-        flow_name = args_dict.pop("--name", None)
+        # --- THIS IS THE FIX ---
+        # Convert the list of [('--flag', 'value'), ...] tuples into a dictionary
+        args_dict = {key.lstrip("-"): value for key, value in named_args}
+
+        # Pop the special '--name' argument to get the flow's name
+        flow_name = args_dict.pop("name", None)
         if not flow_name:
             raise ValueError(
                 "`flow run` command requires a `--name <flow_name>` argument."
             )
 
-        # All other arguments are treated as parameters for the flow
+        # All remaining key-value pairs in args_dict are the flow's parameters
         return FlowCommand("run", name=flow_name, args=args_dict)
+        # --- END FIX ---
 
     def query_list(self):
         logger.debug("Creating QueryCommand(list)")
@@ -490,7 +507,8 @@ class CommandExecutor:
         }
         # Do not create the orchestrator immediately.
         self._orchestrator: Optional[AgentOrchestrator] = None
-        grammar_path = get_asset_path("interactive/grammar/cx.lark")
+        pkg_root = get_pkg_root()
+        grammar_path = pkg_root / "interactive" / "grammar" / "cx.lark"
         with open(grammar_path, "r", encoding="utf-8") as f:
             self.parser = Lark(f.read(), start="start", parser="lalr")
         self.transformer = CommandTransformer()
@@ -730,13 +748,21 @@ class CommandExecutor:
 
         elif isinstance(command, CompileCommand):
             command_prints_own_output = True
+            spec_url = command.named_args.get("spec_url")
+            name = command.named_args.get("name")
+            version = command.named_args.get("version")
+
+            if not spec_url or not name or not version:
+                raise ValueError(
+                    "The compile command requires --spec-url, --name, and --version arguments."
+                )
+
             await self.compile_manager.run_compile(
-                spec_source=command.named_args.get("spec-url"),
-                name=command.named_args.get("name"),
-                version=command.named_args.get("version"),
+                spec_source=spec_url,
+                name=name,
+                version=version,
                 namespace=command.named_args.get("namespace", "user"),
             )
-
         elif isinstance(command, AgentCommand):
             command_prints_own_output = True
             await self.orchestrator.start_session(command.goal)

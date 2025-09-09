@@ -5,11 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2025-09-09
+
+### Added
+
+- **Multi-Format Blueprint Compiler:** The `cx compile` command is now powered by a new, extensible dispatcher/adapter architecture.
+- **Google API Discovery Support:** The compiler can now ingest and parse Google API Discovery Documents, enabling the creation of blueprints for services like Google Drive and Calendar.
+
+### Changed
+
+- **Architectural Refactoring:** The compiler logic was refactored from a single monolithic script (`openapi_compiler.py`) into a clean, modular system (`spec_compiler.py`, `openapi_adapter.py`, `google_discovery_adapter.py`).
+- **Improved Portability:** Introduced the `app-asset:` URI scheme and updated the `ScriptEngine` to correctly resolve asset paths (e.g., `.sql` files) within installed applications, making flows truly portable.
+
+### Fixed
+
+- **SQL `IN` Clause:** Resolved a critical `sqlalchemy.exc.ArgumentError` by implementing manual parameter expansion for list values in SQL `IN` clauses, ensuring compatibility with `pyodbc` and other restrictive drivers.
+- **Pydantic Schema Generation:** Fixed multiple bugs in the OpenAPI adapter that caused it to fail on complex specifications (e.g., Microsoft Graph), including silent skipping of schemas and incorrect generation of forward references.
+
 ## [0.5.5] - 2025-09-09
 
 ### Fixed
 
-- **Build Portability:** The Linux binary is now built on Ubuntu 20.04 to ensure compatibility with older `glibc` versions (like v2.31) found on common LTS server distributions, resolving startup failures on those systems.
+- **Linux Binary Portability:** The Linux executable is now built inside a Docker container based on an older OS (Debian Bullseye) to ensure broad compatibility with a wide range of `glibc` versions. This resolves critical startup failures on common Long-Term Support (LTS) server distributions like Ubuntu 20.04.
+- **CI/CD Build Pipeline:** Hardened the entire release workflow to resolve multiple build failures.
+  - Corrected the Docker image tag to a stable, available version.
+  - Added missing `git` and `binutils` dependencies to the Docker build environment to support dependency installation and PyInstaller.
+  - Replaced the unreliable `zip` command on Windows runners with the robust, built-in `Compress-Archive` PowerShell command.
+  - Switched the final release step from using a static `CHANGELOG.md` path to using GitHub's superior automatic release note generation.
 
 ## [0.5.4] - 2025-09-08
 

@@ -6,7 +6,6 @@ import logging
 import shlex
 import shutil
 import sys
-from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -20,6 +19,7 @@ from cx_shell.interactive.main import start_repl
 from cx_shell.interactive.session import SessionState
 from cx_shell.management.upgrade_manager import UpgradeManager
 from cx_shell.state import APP_STATE
+from .utils import get_assets_root
 
 console = Console()
 logger = structlog.get_logger(__name__)
@@ -166,7 +166,8 @@ def init():
         d.mkdir(parents=True, exist_ok=True)
         console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
     try:
-        source_connections_dir = Path(__file__).parent / "assets" / "connections"
+        assets_root = get_assets_root()
+        source_connections_dir = assets_root / "connections"
         if source_connections_dir.is_dir():
             for conn_asset in source_connections_dir.glob("*.conn.yaml"):
                 target_path = connections_dir / conn_asset.name
@@ -182,8 +183,8 @@ def init():
     except Exception as e:
         console.print(f"[bold red]Error copying sample connections:[/bold red] {e}")
     try:
-        source_assets_dir = Path(__file__).parent / "assets"
-        bundled_blueprints_root = source_assets_dir / "blueprints" / "community"
+        assets_root = get_assets_root()
+        bundled_blueprints_root = assets_root / "blueprints" / "community"
         if bundled_blueprints_root.is_dir():
             for blueprint_source_dir in bundled_blueprints_root.iterdir():
                 if blueprint_source_dir.is_dir():

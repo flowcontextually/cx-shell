@@ -1,5 +1,3 @@
-# src/cx_shell/engine/system-lib/compilers/blueprint_generator.py
-
 from typing import Any, Dict
 
 """

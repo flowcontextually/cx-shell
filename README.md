@@ -21,7 +21,7 @@ Download and install the latest pre-compiled binary for your operating system fr
 
 ```bash
 # This script downloads the latest Linux binary, extracts it, and moves it to your path.
-curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.5.5/cx-v0.5.5-linux-x86_64.tar.gz | tar -xz
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.5.6/cx-v0.5.6-linux-x86_64.tar.gz | tar -xz
 sudo mv cx /usr/local/bin/
 cx --version
 ```
@@ -30,7 +30,7 @@ cx --version
 
 ```bash
 # This script downloads the latest macOS (Intel) binary, extracts it, and moves it to your path.
-curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.5.5/cx-v0.5.5-macos-x86_64.tar.gz | tar -xz
+curl -sL https://github.com/flowcontextually/cx-shell/releases/download/v0.5.6/cx-v0.5.6-macos-x86_64.tar.gz | tar -xz
 sudo mv cx /usr/local/bin/
 cx --version
 ```
@@ -44,7 +44,7 @@ cx --version
 
 ```powershell
 # This script downloads the latest Windows binary and unzips it.
-$url = "https://github.com/flowcontextually/cx-shell/releases/download/v0.5.5/cx-v0.5.5-windows-amd64.zip"
+$url = "https://github.com/flowcontextually/cx-shell/releases/download/v0.5.6/cx-v0.5.6-windows-amd64.zip"
 $output = "cx.zip"
 Invoke-WebRequest -Uri $url -OutFile $output
 Expand-Archive -Path $output -DestinationPath .

@@ -7,6 +7,8 @@ from ..interactive.session import SessionState
 from .llm_client import LLMClient
 from ..data.agent_schemas import AgentConfig
 from ..engine.connector.config import CX_HOME
+from ..utils import get_assets_root
+
 
 AGENT_CONFIG_FILE = CX_HOME / "agents.config.yaml"
 
@@ -22,11 +24,11 @@ class BaseSpecialistAgent(ABC):
 
     def _load_agent_config_sync(self) -> Optional[AgentConfig]:
         """The synchronous part of loading the config file."""
-        from ..utils import get_asset_path
+        assets_root = get_assets_root()
 
         config_file_to_load = AGENT_CONFIG_FILE
         if not config_file_to_load.exists():
-            default_config_path = get_asset_path("configs/agents.default.yaml")
+            default_config_path = assets_root / "configs" / "agents.default.yaml"
             if not default_config_path.exists():
                 return None
             config_file_to_load = default_config_path

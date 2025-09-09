@@ -15,7 +15,7 @@ steps:
     connection_source: "user:system_python_sandbox"
     run:
       action: "run_python_script"
-      script_path: "asset:system-lib/compilers/openapi_compiler.py"
+      script_path: "asset:system-lib/compilers/spec_compiler.py"
       input_data_json: "{{ steps.fetch_spec.result.content }}"
     outputs:
       blueprint_yaml: "blueprint_yaml"

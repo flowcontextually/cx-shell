@@ -197,13 +197,19 @@ class ScriptEngine:
             vfs_response = await strategy.get_content(path_parts, connection, secrets)
             final_result_for_user = vfs_response.model_dump()
             return final_result_for_user
-        elif action.action == "run_sql_query":
+        if action.action == "run_sql_query":
             query_source = action.query
-            query_string = (
-                resolve_path(query_source.split(":", 1)[1]).read_text(encoding="utf-8")
-                if query_source.startswith("file:")
-                else query_source
-            )
+            query_string = ""
+            # Check for our special URI schemes
+            if query_source.startswith(("file:", "app-asset:")):
+                # Use our universal path resolver
+                query_path = resolve_path(query_source.replace("file:", ""))
+                query_string = query_path.read_text(encoding="utf-8")
+            else:
+                # If no protocol, it's a raw SQL string
+                query_string = query_source
+
+            # Now, call the strategy with the resolved SQL content
             query_data = await strategy.execute_query(
                 query_string, action.parameters, connection, secrets
             )
