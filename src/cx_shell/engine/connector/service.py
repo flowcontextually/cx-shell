@@ -46,6 +46,7 @@ class ConnectorService:
         self,
         db_client: Optional[AsyncSurreal] = None,
         vault_client: Optional[hvac.Client] = None,
+        cx_home_path: Optional[Path] = None,
     ):
         """
         Initializes the service with its dependencies. If clients are not provided,
@@ -68,7 +69,9 @@ class ConnectorService:
         from .engine import ScriptEngine
 
         # The service now owns the resolver and engine, configured for the correct mode.
-        self.resolver = ConnectionResolver(db_client, vault_client)
+        self.resolver = ConnectionResolver(
+            db_client, vault_client, cx_home_path=cx_home_path
+        )
         self.engine: "ScriptEngine" = ScriptEngine(self.resolver, self)
 
         logger.info(

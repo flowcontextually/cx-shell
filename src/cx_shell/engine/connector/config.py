@@ -35,12 +35,21 @@ class ConnectionResolver:
         r"^(?P<namespace>[\w-]+)/(?P<name>[\w-]+)@(?P<version>[\w\.-]+)$"
     )
 
-    def __init__(self, db_client: Any = None, vault_client: Any = None):
+    def __init__(
+        self, db_client: Any = None, vault_client: Any = None, cx_home_path: Path = None
+    ):
         self.db = db_client
         self.vault = vault_client
         self.is_standalone = not (db_client and vault_client)
-        self.user_connections_dir = CX_HOME / "connections"
-        self.user_secrets_dir = CX_HOME / "secrets"
+
+        # Use the provided path, or fall back to the default.
+        _cx_home = cx_home_path or CX_HOME
+        self.user_connections_dir = _cx_home / "connections"
+        self.user_secrets_dir = _cx_home / "secrets"
+        # We also need to update where it looks for blueprints
+        global BLUEPRINTS_BASE_PATH
+        BLUEPRINTS_BASE_PATH = _cx_home / "blueprints"
+
         logger.info(
             "ConnectionResolver initialized.", blueprints_path=str(BLUEPRINTS_BASE_PATH)
         )

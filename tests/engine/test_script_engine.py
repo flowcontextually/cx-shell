@@ -79,7 +79,7 @@ async def test_script_engine_executes_blueprint_action_with_mocks(
     )
 
     # Act: Execute the script via the ConnectorService.
-    service = ConnectorService()
+    service = ConnectorService(cx_home_path=clean_cx_home)
     results = await service.run_script(script_file)
 
     # Assert: Verify the result is correct and contains no errors.

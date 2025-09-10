@@ -45,6 +45,7 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
         resolving paths for both system assets and user-provided scripts.
         """
         script_path_str = action_params["script_path"]
+        script_args = action_params.get("args", [])  # <-- ADD THIS
 
         script_path_obj: Path
         if script_path_str.startswith("asset:"):
@@ -67,7 +68,7 @@ class SandboxedPythonStrategy(BaseConnectorStrategy):
 
         try:
             process = subprocess.run(
-                [python_executable, final_script_path],
+                [python_executable, final_script_path, *script_args],
                 input=input_data,
                 capture_output=True,
                 text=True,

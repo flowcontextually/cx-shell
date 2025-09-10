@@ -1,7 +1,9 @@
 import asyncio
+import json
 from typing import List, Any, Optional
 from dataclasses import dataclass
 from ast import literal_eval
+import jmespath
 import structlog
 
 from lark import Lark, Transformer, v_args
@@ -63,6 +65,33 @@ class VariableLookup:
 class CommandTransformer(Transformer):
     """Transforms the Lark parse tree into our executable Command objects."""
 
+    def expression(self, pipeline):
+        print(f"--- [TRANSFORMER] expression -> pipeline: {pipeline}")
+        return pipeline
+
+    def pipeline(self, *items):
+        # --- THIS IS THE FINAL, CORRECTED LOGIC ---
+        # The 'items' tuple contains both our command_unit results (which are tuples)
+        # and the separator Tokens ('|').
+        # We filter the list to keep only the tuples, effectively discarding the VBAR tokens.
+
+        command_units = [item for item in items if isinstance(item, tuple)]
+        # print("command_units")
+        # print(command_units)
+
+        return PipelineCommand(command_units)
+
+    def command_unit(self, executable, formatter=None):
+        merged_options = {}
+        if formatter:
+            for option_dict in formatter:
+                merged_options.update(option_dict)
+
+        # This method should return a tuple
+        result_tuple = (executable, merged_options or None)
+        print(f"--- [TRANSFORMER] command_unit -> returning tuple: {result_tuple}")
+        return result_tuple
+
     def command_line(self, executable, formatter=None):
         merged_options = {}
         if formatter:
@@ -75,9 +104,6 @@ class CommandTransformer(Transformer):
 
     def single_executable(self, exec_obj):
         return exec_obj
-
-    def pipeline(self, *items):
-        return PipelineCommand(list(items))
 
     def assignment(self, var_name, executable):
         return AssignmentCommand(var_name.value, executable)
@@ -370,7 +396,6 @@ class CommandExecutor:
 
     @property
     def orchestrator(self) -> AgentOrchestrator:
-        """Lazily initializes the AgentOrchestrator on first use."""
         if self._orchestrator is None:
             logger.debug("executor.lazy_load", component="AgentOrchestrator")
             self._orchestrator = AgentOrchestrator(self.state, self)
@@ -380,45 +405,79 @@ class CommandExecutor:
         self, command_text: str, piped_input: Any = None
     ) -> Optional[SessionState]:
         """
-        The main entry point. Parses, executes, and delegates the result to the output handler.
+        The main entry point. Parses, executes the entire pipeline, and then
+        handles the final presentation of the result with the correct order of operations.
         """
         if not command_text.strip():
             return None
 
-        executable_obj = None
-        formatter_options = None
-
         try:
-            parsed_tree = self.parser.parse(command_text)
-            executable_obj, formatter_options = self.transformer.transform(parsed_tree)
-
-            result = await self._execute_executable(
-                executable_obj, piped_input=piped_input, is_agent_execution=False
+            pipeline_command = self.transformer.transform(
+                self.parser.parse(command_text)
             )
 
-            if isinstance(result, SessionState):
-                return result
+            # --- THIS IS THE FINAL, CORRECTED PIPELINE LOGIC ---
+            final_result = None
+            current_input = piped_input
 
-            # The handler is now optional. If it exists, use it.
+            # The pipeline loop now correctly handles each command unit and its formatters.
+            for command_to_run, formatter_options in pipeline_command.commands:
+                # 1. Execute the command, passing the input from the previous stage.
+                raw_result = await self._execute_executable(
+                    command_to_run, piped_input=current_input, is_agent_execution=False
+                )
+
+                # 2. Process the raw result with this stage's formatters.
+                # This creates the input for the NEXT stage of the pipe.
+
+                # First, apply the explicit JMESPath query, if present.
+                if formatter_options and formatter_options.get("query"):
+                    processed_result = jmespath.search(
+                        formatter_options["query"], raw_result
+                    )
+                else:
+                    # If no query, perform smart unpacking as a fallback.
+                    processed_result = raw_result
+                    if isinstance(processed_result, dict):
+                        if "results" in processed_result:
+                            processed_result = processed_result["results"]
+                        elif "data" in processed_result:
+                            processed_result = processed_result["data"]
+                        elif "content" in processed_result:
+                            try:
+                                processed_result = json.loads(
+                                    processed_result["content"]
+                                )
+                            except (json.JSONDecodeError, TypeError):
+                                processed_result = processed_result["content"]
+
+                if isinstance(processed_result, dict) and "error" in processed_result:
+                    final_result = processed_result
+                    break  # Stop the pipeline on any error
+
+                current_input = processed_result
+
+            final_result = current_input
+            # --- END OF PIPELINE LOGIC ---
+
+            if isinstance(final_result, SessionState):
+                return final_result
+
+            # --- Final Presentation Logic (Unchanged and Correct) ---
+            last_executable, last_options = pipeline_command.commands[-1]
+
+            # NOTE: We pass the FINAL result of the entire pipeline to the handler.
+            # We do NOT re-apply formatters here, as they were already applied stage-by-stage.
             if self.output_handler:
                 await self.output_handler.handle_result(
-                    result, executable_obj, formatter_options
+                    final_result, last_executable, last_options
                 )
-            else:
-                # This case is for when the server calls execute directly,
-                # but the result should be handled by the WebSocket handler,
-                # which has already happened. So we just return the raw data.
-                return result
 
         except Exception as e:
             original_exc = getattr(e, "orig_exc", e)
             error_result = {"error": f"{type(original_exc).__name__}: {original_exc}"}
             if self.output_handler:
-                await self.output_handler.handle_result(
-                    error_result, executable_obj, formatter_options
-                )
-            else:
-                return error_result
+                await self.output_handler.handle_result(error_result, None, None)
 
         return None
 
@@ -426,26 +485,13 @@ class CommandExecutor:
         self, executable: Any, piped_input: Any = None, is_agent_execution: bool = False
     ) -> Any:
         """
-        Recursively executes any command object, now correctly handling arguments
-        that might contain formatter flags.
+        Executes a SINGLE command object and returns its raw, original result.
+        It does NOT perform any unpacking.
         """
-        if isinstance(executable, PipelineCommand):
-            current_input = piped_input
-            for item in executable.commands:
-                current_input = await self._execute_executable(
-                    item,
-                    piped_input=current_input,
-                    is_agent_execution=is_agent_execution,
-                )
-                if isinstance(current_input, dict) and "error" in current_input:
-                    break
-            return current_input
-
+        # This method is now back to its simple, correct form.
         if isinstance(executable, AssignmentCommand):
             result = await self._execute_executable(
-                executable.command_to_run,
-                piped_input,
-                is_agent_execution=is_agent_execution,
+                executable.command_to_run, piped_input, is_agent_execution
             )
             if not (isinstance(result, dict) and "error" in result):
                 self.state.variables[executable.var_name] = result
@@ -467,43 +513,33 @@ class CommandExecutor:
                 executable, (DotNotationCommand, PositionalArgActionCommand)
             ):
                 with console.status("Executing command...", spinner="dots") as status:
-                    if isinstance(
-                        executable, (FlowCommand, QueryCommand, ScriptCommand)
-                    ):
-                        # For these commands, the universal formatters are parsed as part of their
-                        # arguments dictionary. We do NOT need to clean them here, as the top-level
-                        # `execute` method already separates them. This logic can be simplified.
-                        if isinstance(executable, FlowCommand):
-                            status.update(f"Running flow '{executable.name}'...")
-                            return await self.flow_manager.run_flow(
-                                self.state,
-                                self.service,
-                                executable.name,
-                                executable.args,
-                            )
-                        if isinstance(executable, QueryCommand):
-                            on_alias = executable.named_args.get("on_alias")
-                            query_args = executable.named_args.get("args", {})
-                            status.update(
-                                f"Running query '{executable.name}' on '{on_alias}'..."
-                            )
-                            return await self.query_manager.run_query(
-                                self.state,
-                                self.service,
-                                executable.name,
-                                on_alias,
-                                query_args,
-                            )
-                        if isinstance(executable, ScriptCommand):
-                            status.update(f"Running script '{executable.name}'...")
-                            return await self.script_manager.run_script(
-                                self.state,
-                                self.service,
-                                executable.name,
-                                executable.args,
-                                piped_input,
-                            )
-
+                    if isinstance(executable, FlowCommand):
+                        status.update(f"Running flow '{executable.name}'...")
+                        return await self.flow_manager.run_flow(
+                            self.state, self.service, executable.name, executable.args
+                        )
+                    if isinstance(executable, QueryCommand):
+                        on_alias = executable.named_args.get("on_alias")
+                        query_args = executable.named_args.get("args", {})
+                        status.update(
+                            f"Running query '{executable.name}' on '{on_alias}'..."
+                        )
+                        return await self.query_manager.run_query(
+                            self.state,
+                            self.service,
+                            executable.name,
+                            on_alias,
+                            query_args,
+                        )
+                    if isinstance(executable, ScriptCommand):
+                        status.update(f"Running script '{executable.name}'...")
+                        return await self.script_manager.run_script(
+                            self.state,
+                            self.service,
+                            executable.name,
+                            executable.args,
+                            piped_input,
+                        )
                     if isinstance(
                         executable, (DotNotationCommand, PositionalArgActionCommand)
                     ):

@@ -49,8 +49,18 @@ class ScriptManager:
         if not script_file.exists():
             raise FileNotFoundError(f"Script '{name}' not found at {script_file}")
 
-        input_data = {**(piped_input or {}), **args}
-        serializable_input = safe_serialize(input_data)
+        # --- THIS IS THE DEFINITIVE FIX ---
+        # The input data passed to the script's stdin.
+        input_for_script = piped_input
+
+        # The arguments passed to the script's command line (sys.argv)
+        # We will pass the user-provided args as a JSON string to avoid complex quoting.
+        script_args_list = []
+        if args:
+            script_args_list.append(json.dumps(args))
+        # --- END FIX ---
+
+        serializable_input = safe_serialize(input_for_script)
 
         step = ConnectorStep(
             id=f"run_script_{name}",
@@ -59,7 +69,10 @@ class ScriptManager:
             run=RunPythonScriptAction(
                 action="run_python_script",
                 script_path=str(script_file),
+                # The input data is now just the piped content
                 input_data_json=json.dumps(serializable_input),
+                # The arguments are passed separately
+                args=script_args_list,
             ),
         )
         script = ConnectorScript(
