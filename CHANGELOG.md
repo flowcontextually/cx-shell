@@ -1,9 +1,23 @@
-# Changelog
+## [0.6.0] - 2025-09-09
 
-All notable changes to this project will be documented in this file.
+### Added
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+- **Declarative Web Browser Provider:** Integrated a powerful, stateful web browser automation capability directly into the engine. Flows can now launch and control a browser session using new actions like `browser_navigate`, `browser_click`, and `browser_type`.
+- **Stateful Session Engine:** The `ScriptEngine` has been architecturally enhanced to support long-lived, stateful session providers, starting with the new browser provider. This is a foundational change for future stateful connectors.
+- **System Blueprint for Browser:** Added a new bundled system blueprint (`system/browser`) to enable easy creation of browser connections via `cx connection create`.
+
+### Fixed
+
+- **Parser Ambiguity (Definitive Fix):** Completely resolved all parsing ambiguities for commands with arguments by refactoring the Lark grammar to explicitly separate command-specific arguments from universal formatter flags.
+- **Universal Formatter Flags:** Universal formatters now use a `--cx-` prefix (e.g., `--cx-output`, `--cx-query`) to prevent namespace collisions with user-defined parameters in flows, queries, and scripts.
+- **Bundled Blueprint Resolution:** The `ConnectionResolver` is now architecturally sound. It correctly searches for blueprints in the application's bundled assets _before_ attempting to download them, fixing the circular import and enabling core features to work offline.
+- **Numerous Integration Bugs:** Resolved a cascade of `ModuleNotFoundError`, `TypeError`, and `ImportError` issues that arose during the integration of the browser provider's logic.
+
+## [0.5.8] - 2025-09-09
+
+### Fixed
+
+- **Packaged Dependencies:** Resolved a `ModuleNotFoundError` in the distributed binaries by explicitly including optional dependencies (`aioodbc`, `sqlalchemy-trino`, `GitPython`) in the PyInstaller build. This ensures that features requiring these libraries, such as connecting to MSSQL or Trino, now work correctly in the packaged application.
 
 ## [0.5.7] - 2025-09-09
 

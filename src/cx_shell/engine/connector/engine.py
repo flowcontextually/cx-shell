@@ -88,6 +88,9 @@ class ScriptEngine:
         run_context: Dict,
         debug_mode: bool,
         session_variables: Dict[str, Any] = None,
+        # --- NEW PARAMETERS FOR STATEFUL EXECUTION ---
+        active_session: Any = None,
+        stateful_strategy: Any = None,
     ) -> Any:
         log = logger.bind(step_id=step.id, step_name=step.name)
         session_vars = session_variables or {}
@@ -131,10 +134,6 @@ class ScriptEngine:
             rendered_action_data = recursive_render(
                 step.run.model_dump(), full_render_context
             )
-            # log.info(
-            #     "DEBUG: Data rendered by Jinja before Pydantic validation",
-            #     data=safe_serialize(rendered_action_data),
-            # )
             action = type(step.run)(**rendered_action_data)
         except Exception as e:
             log.error(
@@ -144,13 +143,74 @@ class ScriptEngine:
                 f"Failed to render action parameters for step '{step.name}': {e}"
             ) from e
 
-        # --- Action Dispatcher ---
+        # --- NEW: Stateful Action Dispatcher ---
+        # If the action is a browser action, delegate to the stateful strategy.
+        if action.action.startswith("browser_"):
+            if not active_session or not stateful_strategy:
+                raise RuntimeError(
+                    "A browser action was called, but no active browser session was found. Ensure your flow has a 'session_provider: browser' key and a connection step."
+                )
+
+            # Convert the Pydantic action model into the `CommandInfo` dict structure
+            # that the migrated `AgentSession` expects.
+            command_info = {
+                "command_type": action.action.replace("browser_", "", 1),
+                "name": step.name,
+                "text": getattr(action, "text", getattr(action, "url", None)),
+                "element_info": {
+                    "locators": {"css_selector": getattr(action, "target", None)}
+                },
+            }
+
+            # The step ID is used for observability (screenshots, logs, etc.)
+            # A simple heuristic to get a numeric index for the agent.
+            step_index = 0
+            try:
+                # Attempt to parse a numeric index from the step ID for better reporting
+                step_index = int("".join(filter(str.isdigit, step.id)))
+            except ValueError:
+                pass  # Default to 0 if no numbers are in the ID
+
+            return await stateful_strategy.execute_step(
+                active_session, command_info, step_index
+            )
+
+        # --- EXISTING: Stateless Action Dispatcher ---
+        # This logic handles all non-browser actions.
+
         connection, secrets, strategy = None, None, None
+
+        # A special case for the browser setup step: it only needs to exist to trigger
+        # the session, but doesn't perform a stateless action itself. We return a
+        # success message and continue.
+        if (
+            hasattr(step.run, "action")
+            and step.run.action == "browser_navigate"
+            and step.depends_on is None
+        ):
+            if active_session:
+                return {
+                    "status": "success",
+                    "message": "Browser session configured and ready.",
+                }
+
         if step.connection_source:
             connection, secrets = await self.resolver.resolve(step.connection_source)
             strategy = self.connector._get_strategy_for_connection_model(connection)
 
-        # --- v0.2.1: Native run_transform action ---
+        # This step is a special kind of "no-op" for the stateful session setup.
+        # It's only purpose is to be resolved so the engine can start the session.
+        # Once the session is started, this step's work is done.
+        if (
+            stateful_strategy
+            and strategy
+            and strategy.strategy_key == stateful_strategy.strategy_key
+        ):
+            return {
+                "status": "success",
+                "message": f"Browser session setup step '{step.name}' completed.",
+            }
+
         if action.action == "run_transform":
             log.info(
                 "Executing native transform action.", script_path=action.script_path
@@ -167,10 +227,9 @@ class ScriptEngine:
                 transformer_script_data, transformer_run_context
             )
 
-        # --- Standard Connection-Based Actions ---
         if not strategy:
             raise ValueError(
-                f"Step '{step.name}' requires a connection_source, but none was provided or resolved."
+                f"Step '{step.name}' requires a connection_source, but none was provided or resolved for a stateless action."
             )
 
         if action.action == "test_connection":
@@ -197,19 +256,14 @@ class ScriptEngine:
             vfs_response = await strategy.get_content(path_parts, connection, secrets)
             final_result_for_user = vfs_response.model_dump()
             return final_result_for_user
-        if action.action == "run_sql_query":
+        elif action.action == "run_sql_query":
             query_source = action.query
             query_string = ""
-            # Check for our special URI schemes
             if query_source.startswith(("file:", "app-asset:")):
-                # Use our universal path resolver
                 query_path = resolve_path(query_source.replace("file:", ""))
                 query_string = query_path.read_text(encoding="utf-8")
             else:
-                # If no protocol, it's a raw SQL string
                 query_string = query_source
-
-            # Now, call the strategy with the resolved SQL content
             query_data = await strategy.execute_query(
                 query_string, action.parameters, connection, secrets
             )
@@ -239,15 +293,8 @@ class ScriptEngine:
         session_variables: Dict[str, Any] = None,
     ):
         """
-        Executes a declarative workflow directly from a Pydantic model instance,
-        handling step dependencies, context injection, and error propagation.
-
-        Args:
-            script_model: The Pydantic model of the script to execute.
-            script_input: Data piped from a previous command or stdin.
-            debug_mode: Flag to enable verbose debugging features.
-            session_variables: A dictionary of variables from the interactive session
-                               to be made available for templating.
+        Executes a declarative workflow, now with support for stateful session providers
+        like the web browser, handling step dependencies, context injection, and error propagation.
         """
         log = logger.bind(script_name=script_model.name)
         log.info("DAG-based ScriptEngine running script from model.")
@@ -255,73 +302,126 @@ class ScriptEngine:
         dag = self._build_dependency_graph(script_model.steps)
         topological_generations = list(nx.topological_generations(dag))
 
-        # Ensure script_input and session_variables are dictionaries to prevent None errors.
         processed_script_input = script_input or {}
         processed_session_variables = session_variables or {}
 
         run_context = {"script_input": processed_script_input, "steps": {}}
         results: Dict[str, Any] = {}
 
-        for generation in topological_generations:
-            tasks = [
-                self._execute_step(
-                    dag.nodes[step_id]["step_data"],
-                    run_context,
-                    debug_mode,
-                    processed_session_variables,
+        # --- NEW: Stateful Session Management ---
+        active_stateful_session = None
+        stateful_strategy = None
+
+        # This new top-level key in the script triggers stateful mode.
+        session_provider_key = getattr(script_model, "session_provider", None)
+
+        try:
+            # --- Session Initialization (if required) ---
+            if session_provider_key:
+                log.info(
+                    "Stateful session provider detected.", provider=session_provider_key
                 )
-                for step_id in generation
-            ]
-
-            # Execute steps in the current generation concurrently
-            generation_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for step_id, step_result in zip(generation, generation_results):
-                step_data = dag.nodes[step_id]["step_data"]
-
-                # If a step failed, capture the error and halt execution of subsequent steps.
-                if isinstance(step_result, Exception):
-                    log.error(
-                        "Step failed during execution.",
-                        step_id=step_id,
-                        step_name=step_data.name,
-                        error=str(step_result),
-                        exc_info=step_result if debug_mode else False,
+                # Find the step that defines the connection for this session provider
+                setup_step = next(
+                    (s for s in script_model.steps if s.connection_source), None
+                )
+                if not setup_step or not setup_step.connection_source:
+                    raise ValueError(
+                        f"A flow with a session_provider='{session_provider_key}' requires at least one step with a connection_source."
                     )
-                    # Package the error into a clean dictionary for the caller
-                    results[step_data.name] = {
-                        "error": f"{type(step_result).__name__}: {step_result}"
+
+                connection, secrets = await self.resolver.resolve(
+                    setup_step.connection_source
+                )
+                strategy_instance = self.connector._get_strategy_for_connection_model(
+                    connection
+                )
+
+                # Check if the strategy supports the stateful lifecycle methods.
+                if not hasattr(strategy_instance, "start_session"):
+                    raise TypeError(
+                        f"The strategy for '{connection.catalog.connector_provider_key}' is not a stateful session provider."
+                    )
+
+                stateful_strategy = strategy_instance
+                active_stateful_session = await stateful_strategy.start_session(
+                    connection, secrets
+                )
+                log.info("Stateful session started successfully.")
+
+            # --- Main Execution Loop ---
+            for generation in topological_generations:
+                tasks = []
+                for step_id in generation:
+                    step_data = dag.nodes[step_id]["step_data"]
+                    # Pass the active session to the execution helper
+                    tasks.append(
+                        self._execute_step(
+                            step_data,
+                            run_context,
+                            debug_mode,
+                            processed_session_variables,
+                            active_stateful_session,  # NEW
+                            stateful_strategy,  # NEW
+                        )
+                    )
+
+                generation_results = await asyncio.gather(
+                    *tasks, return_exceptions=True
+                )
+
+                for step_id, step_result in zip(generation, generation_results):
+                    step_data = dag.nodes[step_id]["step_data"]
+                    if isinstance(step_result, Exception):
+                        log.error(
+                            "Step failed during execution.",
+                            step_id=step_id,
+                            error=str(step_result),
+                            exc_info=step_result if debug_mode else False,
+                        )
+                        results[step_data.name] = {
+                            "error": f"{type(step_result).__name__}: {step_result}"
+                        }
+                        # On failure, immediately exit the loop and proceed to the 'finally' block for cleanup.
+                        raise step_result
+
+                    results[step_data.name] = step_result
+                    step_outputs = {}
+                    if step_data.outputs:
+                        for output_name, query in step_data.outputs.items():
+                            try:
+                                step_outputs[output_name] = jmespath.search(
+                                    query, step_result
+                                )
+                            except Exception as e:
+                                log.warning(
+                                    "Failed to extract output.",
+                                    step_name=step_data.name,
+                                    output_name=output_name,
+                                    error=str(e),
+                                )
+
+                    run_context["steps"][step_id] = {
+                        "result": step_result,
+                        "outputs": step_outputs,
                     }
-                    # Immediately return to prevent dependent steps from running
-                    return results
 
-                # If the step succeeded, store its result
-                results[step_data.name] = step_result
-                step_outputs = {}
-                if step_data.outputs:
-                    for output_name, query in step_data.outputs.items():
-                        try:
-                            # Use JMESPath to extract specific values from the result
-                            step_outputs[output_name] = jmespath.search(
-                                query, step_result
-                            )
-                        except Exception as e:
-                            log.warn(
-                                "Failed to extract output from step result.",
-                                step_name=step_data.name,
-                                output_name=output_name,
-                                jmespath_query=query,
-                                error=str(e),
-                            )
+            log.info("Script execution finished successfully.")
+            return results
 
-                # Update the run_context so subsequent steps can reference this step's output
-                run_context["steps"][step_id] = {
-                    "result": step_result,
-                    "outputs": step_outputs,
-                }
+        except Exception as e:
+            # This block now catches failures from the execution loop to ensure cleanup happens.
+            log.error("Script execution failed.", error=str(e), exc_info=True)
+            # We don't re-raise immediately; we let the finally block run first.
+            # Return the partial results which will contain the error message.
+            return results
 
-        log.info("Script execution finished successfully.")
-        return results
+        finally:
+            # --- Session Teardown (Guaranteed to run) ---
+            if active_stateful_session and stateful_strategy:
+                log.info("Cleaning up stateful session...")
+                await stateful_strategy.end_session()
+                log.info("Stateful session cleaned up successfully.")
 
     async def run_script(
         self,

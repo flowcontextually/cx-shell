@@ -10,6 +10,7 @@ from typing import Optional
 
 import structlog
 import typer
+import uvicorn
 import yaml
 from rich.console import Console
 from rich.traceback import Traceback
@@ -150,10 +151,15 @@ def main_callback(
 @handle_exceptions
 def init():
     """Initializes the `~/.cx` workspace with default assets and configurations."""
-    from cx_shell.engine.connector.config import CX_HOME, BLUEPRINTS_BASE_PATH
+    # --- THIS IS THE FIX ---
+    # Import each constant from its correct, canonical source file.
+    from cx_shell.utils import CX_HOME
+    from cx_shell.engine.connector.config import BLUEPRINTS_BASE_PATH
+    # --- END FIX ---
 
     console.print("[bold green]Initializing Contextually environment...[/bold green]")
     connections_dir = CX_HOME / "connections"
+    # The rest of the function remains the same, as it now has the correct variables.
     dirs_to_create = [
         connections_dir,
         CX_HOME / "secrets",
@@ -216,6 +222,22 @@ def upgrade():
     """Checks for and installs the latest version of the cx shell."""
     manager = UpgradeManager()
     manager.run_upgrade()
+
+
+@app.command()
+@handle_exceptions
+def serve(
+    host: str = typer.Option("127.0.0.1", help="The host to bind the server to."),
+    port: int = typer.Option(8888, help="The port to run the server on."),
+):
+    """Launches the cx-server API for programmatic access and UIs."""
+    console.print(
+        f"[bold green]🚀 Launching cx-server on http://{host}:{port}[/bold green]"
+    )
+    console.print("Press Ctrl+C to shut down.")
+
+    # We point uvicorn to the 'app' instance inside our server.main module
+    uvicorn.run("cx_shell.server.main:app", host=host, port=port, log_level="info")
 
 
 # --- Pass-Through Command Groups ---

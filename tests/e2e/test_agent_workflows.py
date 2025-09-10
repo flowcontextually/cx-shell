@@ -2,7 +2,7 @@
 
 import pytest
 from pytest_mock import MockerFixture
-
+from unittest.mock import AsyncMock  # Import AsyncMock
 from cx_shell.interactive.executor import CommandExecutor
 from cx_shell.interactive.session import SessionState
 from cx_shell.data.agent_schemas import (
@@ -18,10 +18,15 @@ from cx_shell.data.agent_schemas import (
 def executor(clean_cx_home):
     """
     Provides a clean CommandExecutor instance for E2E tests.
-    This fixture is implicitly using the `clean_cx_home` fixture from conftest.py.
     """
     state = SessionState(is_interactive=False)
-    executor_instance = CommandExecutor(state)
+
+    # --- THIS IS THE FIX ---
+    # Create an AsyncMock for the output handler.
+    mock_output_handler = AsyncMock()
+    executor_instance = CommandExecutor(state, mock_output_handler)
+    # --- END FIX ---
+
     return executor_instance
 
 

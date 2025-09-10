@@ -11,7 +11,7 @@ import yaml
 from .session import SessionState
 from ..engine.connector.service import ConnectorService
 from ..engine.transformer.service import TransformerService
-from ..engine.connector.config import CX_HOME
+from ..utils import CX_HOME
 
 from cx_core_schemas.connector_script import (
     ConnectorScript,

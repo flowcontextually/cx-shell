@@ -6,7 +6,7 @@ import asyncio
 from ..interactive.session import SessionState
 from .llm_client import LLMClient
 from ..data.agent_schemas import AgentConfig
-from ..engine.connector.config import CX_HOME
+from ..utils import CX_HOME
 from ..utils import get_assets_root
 
 

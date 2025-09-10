@@ -1,5 +1,3 @@
-# /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/main.py
-
 import asyncio
 from pathlib import Path
 
@@ -9,8 +7,11 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from .completer import CxCompleter
-from .executor import CommandExecutor, console
+from .executor import CommandExecutor
 from .session import SessionState
+
+# --- THIS IS THE NEW IMPORT ---
+from .output_handler import RichConsoleHandler
 
 
 def start_repl():
@@ -18,7 +19,14 @@ def start_repl():
     history_file = Path.home() / ".cx_history"
     state = SessionState()
     completer = CxCompleter(state)
-    executor = CommandExecutor(state)
+
+    # --- THIS IS THE CRITICAL CHANGE ---
+    # Instantiate the RichConsoleHandler for terminal output.
+    output_handler = RichConsoleHandler()
+    # Pass the handler to the CommandExecutor during initialization.
+    executor = CommandExecutor(state, output_handler)
+    # --- END CRITICAL CHANGE ---
+
     bindings = KeyBindings()
     prompt_session = PromptSession(
         history=FileHistory(str(history_file)),
@@ -59,26 +67,25 @@ def start_repl():
 
                 if command_text.strip().startswith("//"):
                     goal = command_text.strip().lstrip("//").strip()
-
-                    # Delegate the entire workflow to the orchestrator,
-                    # which now correctly handles spinners and errors.
                     suggestion = await executor.orchestrator.prepare_and_run_translate(
                         goal
                     )
-
                     if suggestion is not None:
                         next_prompt_default = suggestion
-
                     continue
 
-                # Normal command execution path
+                # The executor.execute() method now handles all output via the RichConsoleHandler
                 new_state = await executor.execute(command_text)
 
                 if isinstance(new_state, SessionState):
+                    # Handle session loading
                     state = new_state
                     executor.state = state
                     completer.state = state
-                    console.print("[bold yellow]Session restored.[/bold yellow]")
+                    # The handler will print the confirmation message
+                    await output_handler.handle_result(
+                        "[bold yellow]Session restored.[/bold yellow]", None, None
+                    )
 
             except KeyboardInterrupt:
                 print()

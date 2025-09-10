@@ -1,18 +1,14 @@
 import asyncio
-import json
 from typing import List, Any, Optional
 from dataclasses import dataclass
 from ast import literal_eval
-import jmespath
 import structlog
 
 from lark import Lark, Transformer, v_args
 from rich.console import Console
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
 from rich import box
-from rich.pretty import Pretty
 
 from ..engine.connector.service import ConnectorService
 from ..management.session_manager import SessionManager
@@ -49,6 +45,8 @@ from .commands import (
 from .session import SessionState
 from ..data.agent_schemas import DryRunResult
 from ..utils import get_pkg_root
+from .output_handler import IOutputHandler
+
 
 console = Console()
 logger = structlog.get_logger(__name__)
@@ -66,11 +64,6 @@ class CommandTransformer(Transformer):
     """Transforms the Lark parse tree into our executable Command objects."""
 
     def command_line(self, executable, formatter=None):
-        logger.debug(
-            "Transforming: command_line",
-            executable=type(executable).__name__,
-            formatter=formatter,
-        )
         merged_options = {}
         if formatter:
             for option_dict in formatter:
@@ -78,417 +71,280 @@ class CommandTransformer(Transformer):
         return executable, merged_options or None
 
     def executable(self, exec_obj):
-        logger.debug("Transforming: executable", result_type=type(exec_obj).__name__)
         return exec_obj
 
     def single_executable(self, exec_obj):
-        logger.debug(
-            "Transforming: single_executable", result_type=type(exec_obj).__name__
-        )
         return exec_obj
 
     def pipeline(self, *items):
-        logger.debug("Transforming: pipeline", num_items=len(items))
         return PipelineCommand(list(items))
 
     def assignment(self, var_name, executable):
-        logger.debug("Transforming: assignment", var_name=var_name.value)
         return AssignmentCommand(var_name.value, executable)
 
     def single_command(self, command):
-        logger.debug("Transforming: single_command", result_type=type(command).__name__)
         return command
 
     def builtin_command(self, cmd):
-        logger.debug("Transforming: builtin_command", result_type=type(cmd).__name__)
         return cmd
 
     def variable_lookup(self, var_name):
-        logger.debug("Transforming: variable_lookup", var_name=var_name.value)
         return VariableLookup(var_name.value)
 
     def formatter(self, *options):
-        logger.debug("Transforming: formatter", options=options)
         return list(options)
 
     def formatter_option(self, option):
-        logger.debug("Transforming: formatter_option", option=option)
         return option
 
     def output_option(self, mode):
-        logger.debug("Transforming: output_option", mode=mode.value)
         return {"output_mode": mode.value}
 
     def columns_option(self, columns):
-        logger.debug("Transforming: columns_option", columns=columns)
         return {"columns": columns}
 
     def query_option(self, query_str):
-        logger.debug("Transforming: query_option", query=query_str.value)
         return {"query": literal_eval(query_str.value)}
 
     def column_list(self, *cols):
-        logger.debug("Transforming: column_list", cols=[c.value for c in cols])
         return [c.value for c in cols]
 
     def dot_notation_kw_action(self, alias, action_name, arguments=None):
-        logger.debug(
-            "Transforming: dot_notation_kw_action",
-            alias=alias.value,
-            action=action_name.value,
-        )
         return DotNotationCommand(alias.value, action_name.value, arguments or {})
 
     def dot_notation_pos_action(self, alias, action_name, string_arg):
-        logger.debug(
-            "Transforming: dot_notation_pos_action",
-            alias=alias.value,
-            action=action_name.value,
-        )
         return PositionalArgActionCommand(
             alias.value, action_name.value, literal_eval(string_arg.value)
         )
 
     def connect_command(self, source, alias):
-        logger.debug("Transforming: connect_command")
         return BuiltinCommand(["connect", source.value, "--as", alias.value])
 
     def connections_command(self):
-        logger.debug("Transforming: connections_command")
         return BuiltinCommand(["connections"])
 
     def help_command(self):
-        logger.debug("Transforming: help_command")
         return BuiltinCommand(["help"])
 
     def inspect_command(self, var_name):
-        logger.debug("Transforming: inspect_command", var_name=var_name.value)
         return InspectCommand(var_name.value)
 
-    def compile_command(self, *named_args):
-        args_dict = {
-            key.lstrip("-").replace("-", "_"): value for key, value in named_args
-        }
-        return CompileCommand(named_args=args_dict)
-
     def agent_command(self, goal):
-        logger.debug("Transforming: agent_command")
         return AgentCommand(literal_eval(goal.value))
 
-    # --- Grouped Command Pass-throughs ---
+    # Pass-throughs for all command groups
     def session_command(self, cmd_obj):
-        logger.debug("Transforming: session_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def session_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _session_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def variable_command(self, cmd_obj):
-        logger.debug(
-            "Transforming: variable_command", child_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def variable_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _variable_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def flow_command(self, cmd_obj):
-        logger.debug("Transforming: flow_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def flow_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _flow_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def query_command(self, cmd_obj):
-        logger.debug("Transforming: query_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def query_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _query_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def script_command(self, cmd_obj):
-        logger.debug("Transforming: script_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def script_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _script_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def connection_command(self, cmd_obj):
-        logger.debug(
-            "Transforming: connection_command", child_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def connection_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _connection_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def app_command(self, cmd_obj):
-        logger.debug("Transforming: app_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def app_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _app_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
     def process_command(self, cmd_obj):
-        logger.debug("Transforming: process_command", child_type=type(cmd_obj).__name__)
         return cmd_obj
 
     def process_subcommand(self, cmd_obj):
-        logger.debug(
-            "Transforming: _process_subcommand", result_type=type(cmd_obj).__name__
-        )
         return cmd_obj
 
-    # --- Child Rules that Create Objects ---
+    # --- Methods for specific subcommands ---
     def session_list(self):
-        logger.debug("Creating SessionCommand(list)")
         return SessionCommand("list")
 
     def session_save(self, name):
-        logger.debug("Creating SessionCommand(save)")
         return SessionCommand("save", name.value)
 
     def session_load(self, name):
-        logger.debug("Creating SessionCommand(load)")
         return SessionCommand("load", name.value)
 
     def session_rm(self, name):
-        logger.debug("Creating SessionCommand(rm)")
         return SessionCommand("rm", name.value)
 
     def session_status(self):
-        logger.debug("Creating SessionCommand(status)")
         return SessionCommand("status")
 
     def variable_list(self):
-        logger.debug("Creating VariableCommand(list)")
         return VariableCommand("list")
 
     def variable_rm(self, var_name):
-        logger.debug("Creating VariableCommand(rm)")
         return VariableCommand("rm", var_name.value)
 
     def flow_list(self):
-        logger.debug("Creating FlowCommand(list)")
         return FlowCommand("list")
 
-    # def flow_run(self, *named_args):
-    #     logger.debug("Creating FlowCommand(run) from named arguments")
-    #     args_dict = dict(named_args)
-    #     flow_name = args_dict.pop("--name", None)
-    #     if not flow_name:
-    #         raise ValueError(
-    #             "`flow run` command requires a `--name <flow_name>` argument."
-    #         )
-
-    #     # All other arguments are treated as parameters for the flow
-    #     return FlowCommand("run", name=flow_name, args=args_dict)
-
-    def flow_run(self, *named_args):
-        logger.debug("Creating FlowCommand(run) from named arguments")
-        # --- THIS IS THE FIX ---
-        # Convert the list of [('--flag', 'value'), ...] tuples into a dictionary
-        args_dict = {key.lstrip("-"): value for key, value in named_args}
-
-        # Pop the special '--name' argument to get the flow's name
-        flow_name = args_dict.pop("name", None)
-        if not flow_name:
-            raise ValueError(
-                "`flow run` command requires a `--name <flow_name>` argument."
-            )
-
-        # All remaining key-value pairs in args_dict are the flow's parameters
-        return FlowCommand("run", name=flow_name, args=args_dict)
-        # --- END FIX ---
+    def flow_run(self, name, *kv_pairs):
+        return FlowCommand("run", name=name.value, args=dict(kv_pairs))
 
     def query_list(self):
-        logger.debug("Creating QueryCommand(list)")
         return QueryCommand("list")
 
-    def query_run(self, *named_args):
-        logger.debug("Creating QueryCommand(run) from named arguments")
-        args_dict = dict(named_args)
-        query_name = args_dict.pop("--name", None)
-        on_alias = args_dict.pop("--on", None)
-
-        if not query_name:
-            raise ValueError(
-                "`query run` command requires a `--name <query_name>` argument."
-            )
-        if not on_alias:
-            raise ValueError("`query run` command requires an `--on <alias>` argument.")
-
+    def query_run(self, on_alias, name, *kv_pairs):
         return QueryCommand(
-            "run", name=query_name, named_args={"on_alias": on_alias, "args": args_dict}
+            "run",
+            name=name.value,
+            named_args={"on_alias": on_alias.value, "args": dict(kv_pairs)},
         )
 
     def script_list(self):
-        logger.debug("Creating ScriptCommand(list)")
         return ScriptCommand("list")
 
-    def script_run(self, *named_args):
-        logger.debug("Creating ScriptCommand(run) from named arguments")
-        args_dict = dict(named_args)
-        script_name = args_dict.pop("--name", None)
-        if not script_name:
-            raise ValueError(
-                "`script run` command requires a `--name <script_name>` argument."
-            )
-
-        return ScriptCommand("run", name=script_name, args=args_dict)
+    def script_run(self, name, *kv_pairs):
+        return ScriptCommand("run", name=name.value, args=dict(kv_pairs))
 
     def connection_list(self):
         return ConnectionCommand("list")
 
-    def connection_create(self, *named_args):
-        args_dict = {key.lstrip("-"): value for key, value in named_args}
+    def connection_create(self, command_args=None):
+        args_dict = {key.lstrip("-"): value for key, value in (command_args or [])}
         return ConnectionCommand("create", named_args=args_dict)
 
-    def open_command(self, asset_type_token, asset_name_token=None, *named_args):
-        logger.debug("Creating OpenCommand")
+    def open_command_with_args(
+        self, asset_type_token, asset_name_token=None, command_args=None
+    ):
         asset_type = asset_type_token.value
         asset_name = asset_name_token.value if asset_name_token else None
-        args_dict = {key.lstrip("-"): value for key, value in named_args}
+        args_dict = {key.lstrip("-"): value for key, value in (command_args or [])}
         return OpenCommand(asset_type, asset_name, args_dict)
 
     def app_list(self):
-        logger.debug("Creating AppCommand(list)")
-        # FIX: Provide the required 'args' dictionary.
         return AppCommand("list", args={})
 
-    def app_install(self, *named_args):
-        logger.debug("Creating AppCommand(install) from named arguments")
-        args_dict = dict(named_args)
+    def app_install(self, command_args):
+        args_dict = dict(command_args)
         source_keys = {"--id", "--path", "--url"}
         provided_keys = set(args_dict.keys())
         if len(provided_keys.intersection(source_keys)) != 1:
             raise ValueError(
                 "`app install` requires exactly one of --id, --path, or --url."
             )
-        return AppCommand("install", args=args_dict)
+        # --- THIS IS THE FIX ---
+        # Changed 'k' to 'key' to match the loop variable.
+        cleaned_args = {key.lstrip("-"): v for key, v in args_dict.items()}
+        # --- END FIX ---
+        return AppCommand("install", args=cleaned_args)
 
     def app_uninstall(self, arg):
-        logger.debug("Creating AppCommand(uninstall)")
-        # FIX: Provide the required 'args' dictionary.
         return AppCommand("uninstall", args={"id": arg.value})
 
     def app_sync(self):
-        logger.debug("Creating AppCommand(sync)")
-        # FIX: Provide the required 'args' dictionary.
         return AppCommand("sync", args={})
 
     def app_package(self, arg):
-        logger.debug("Creating AppCommand(package)")
-        # FIX: Provide the required 'args' dictionary.
         return AppCommand("package", args={"path": arg.value})
 
     def app_search(self, query=None):
-        logger.debug("Creating AppCommand(search)")
         query_val = query.value if query else None
-        # FIX: Provide the required 'args' dictionary.
         return AppCommand("search", args={"query": query_val})
 
+    def compile_command_with_args(self, command_args):
+        args_dict = {
+            key.lstrip("-").replace("-", "_"): value for key, value in command_args
+        }
+        return CompileCommand(named_args=args_dict)
+
     def process_list(self):
-        logger.debug("Creating ProcessCommand(list)")
         return ProcessCommand("list")
 
     def process_logs(self, arg, follow=None):
-        logger.debug("Creating ProcessCommand(logs)")
         return ProcessCommand("logs", arg.value, follow is not None)
 
     def process_stop(self, arg):
-        logger.debug("Creating ProcessCommand(stop)")
         return ProcessCommand("stop", arg.value)
 
-    # --- Argument & Terminal Parsing ---
+    # --- Argument & Terminal Processing ---
+    def command_args(self, *named_args):
+        return list(named_args)
+
     def arguments(self, *args):
-        logger.debug("Parsing: arguments")
         return dict(args)
 
+    def kv_pair(self, key, value):
+        return key.value, value
+
     def kw_argument(self, key, value):
-        logger.debug("Parsing: kw_argument")
         return key.value, value
 
     def named_argument(self, flag, value):
         processed_value = value
-
-        # --- THIS IS THE FIX ---
-        # If the value is a Token, it's either an ARG, STRING, or NUMBER
         if hasattr(value, "type"):
-            # For STRING tokens (which can now be '...' or "..."),
-            # use literal_eval to safely un-quote and process escapes.
             if value.type == "STRING":
                 processed_value = literal_eval(value.value)
-            else:  # For ARG, NUMBER, etc.
+            else:
                 processed_value = value.value
-        # --- END FIX ---
-
-        # Try to convert unquoted ARGs to numbers if possible
         try:
             processed_value = int(processed_value)
         except (ValueError, TypeError):
             try:
                 processed_value = float(processed_value)
             except (ValueError, TypeError):
-                pass  # Keep as string if it's not a number
-
-        logger.debug("Parsing: named_argument", flag=flag.value, value=processed_value)
+                pass
         return (flag.value, processed_value)
 
     def value(self, v):
-        logger.debug("Parsing: value", value_type=type(v).__name__)
         if hasattr(v, "type"):
             if v.type == "JINJA_BLOCK":
                 return v.value
-            # Apply the same robust literal_eval here for consistency
             if v.type in ("STRING", "NUMBER"):
                 return literal_eval(v.value)
             if v.type == "ARG":
-                return v.value  # ARG is already unquoted
+                return v.value
             if v.type == "CNAME":
                 return v.value
         return v
 
     def true(self, _):
-        logger.debug("Parsing: true")
         return True
 
     def false(self, _):
-        logger.debug("Parsing: false")
         return False
 
     def null(self, _):
-        logger.debug("Parsing: null")
         return None
 
 
 class CommandExecutor:
     """Orchestrates the parsing, execution, and presentation of all shell commands."""
 
-    def __init__(self, state: SessionState):
-        """Initializes the executor and all its subordinate managers."""
+    def __init__(self, state: SessionState, output_handler: IOutputHandler):
+        """
+        Initializes the executor with a session state and a dedicated output handler.
+        """
         self.state = state
+        self.output_handler = output_handler  # Store the handler
         self.service = ConnectorService()
         self.session_manager = SessionManager()
         self.variable_manager = VariableManager()
@@ -505,7 +361,6 @@ class CommandExecutor:
             "connections": self.execute_list_connections,
             "help": self.execute_help,
         }
-        # Do not create the orchestrator immediately.
         self._orchestrator: Optional[AgentOrchestrator] = None
         pkg_root = get_pkg_root()
         grammar_path = pkg_root / "interactive" / "grammar" / "cx.lark"
@@ -525,18 +380,18 @@ class CommandExecutor:
         self, command_text: str, piped_input: Any = None
     ) -> Optional[SessionState]:
         """
-        The main entry point for commands initiated by a HUMAN user from the REPL
-        or the top-level CLI. It orchestrates parsing, execution, and printing.
+        The main entry point. Parses, executes, and delegates the result to the output handler.
         """
         if not command_text.strip():
             return None
+
+        executable_obj = None
+        formatter_options = None
+
         try:
             parsed_tree = self.parser.parse(command_text)
             executable_obj, formatter_options = self.transformer.transform(parsed_tree)
 
-            # --- FIX: Call the internal executor with is_agent_execution=False ---
-            # This tells the execution pipeline that a human is running the command,
-            # so it can optimize the output for readability (e.g., suppress JSON).
             result = await self._execute_executable(
                 executable_obj, piped_input=piped_input, is_agent_execution=False
             )
@@ -544,13 +399,26 @@ class CommandExecutor:
             if isinstance(result, SessionState):
                 return result
 
-            self._print_result(result, executable_obj, formatter_options)
+            # The handler is now optional. If it exists, use it.
+            if self.output_handler:
+                await self.output_handler.handle_result(
+                    result, executable_obj, formatter_options
+                )
+            else:
+                # This case is for when the server calls execute directly,
+                # but the result should be handled by the WebSocket handler,
+                # which has already happened. So we just return the raw data.
+                return result
 
         except Exception as e:
             original_exc = getattr(e, "orig_exc", e)
-            console.print(
-                f"[bold red]{type(original_exc).__name__}:[/bold red] {original_exc}"
-            )
+            error_result = {"error": f"{type(original_exc).__name__}: {original_exc}"}
+            if self.output_handler:
+                await self.output_handler.handle_result(
+                    error_result, executable_obj, formatter_options
+                )
+            else:
+                return error_result
 
         return None
 
@@ -558,14 +426,12 @@ class CommandExecutor:
         self, executable: Any, piped_input: Any = None, is_agent_execution: bool = False
     ) -> Any:
         """
-        Recursively executes any command object, tracking whether the command
-        was initiated by a human or the agent to tailor the output accordingly.
+        Recursively executes any command object, now correctly handling arguments
+        that might contain formatter flags.
         """
-        # --- Handle Structural/Recursive Executables ---
         if isinstance(executable, PipelineCommand):
             current_input = piped_input
             for item in executable.commands:
-                # Propagate the agent context flag through the pipeline
                 current_input = await self._execute_executable(
                     item,
                     piped_input=current_input,
@@ -576,7 +442,6 @@ class CommandExecutor:
             return current_input
 
         if isinstance(executable, AssignmentCommand):
-            # Propagate the flag to the command being run
             result = await self._execute_executable(
                 executable.command_to_run,
                 piped_input,
@@ -584,7 +449,6 @@ class CommandExecutor:
             )
             if not (isinstance(result, dict) and "error" in result):
                 self.state.variables[executable.var_name] = result
-            # Don't return the full result object for assignments, just a confirmation.
             return (
                 result
                 if isinstance(result, dict) and "error" in result
@@ -598,40 +462,48 @@ class CommandExecutor:
                 raise ValueError("Cannot pipe data into a variable lookup.")
             return self.state.variables[executable.var_name]
 
-        # --- Dispatch All Command Types ---
         if isinstance(executable, Command):
-            # Data-producing commands (e.g., `flow run`, `gh.getUser`) are heavy operations.
             if getattr(executable, "subcommand", None) == "run" or isinstance(
                 executable, (DotNotationCommand, PositionalArgActionCommand)
             ):
                 with console.status("Executing command...", spinner="dots") as status:
-                    if isinstance(executable, FlowCommand):
-                        status.update(f"Running flow '{executable.name}'...")
-                        return await self.flow_manager.run_flow(
-                            self.state, self.service, executable.name, executable.args
-                        )
-                    if isinstance(executable, QueryCommand):
-                        on_alias = executable.named_args.get("on_alias")
-                        status.update(
-                            f"Running query '{executable.name}' on '{on_alias}'..."
-                        )
-                        query_args = executable.named_args.get("args", {})
-                        return await self.query_manager.run_query(
-                            self.state,
-                            self.service,
-                            executable.name,
-                            on_alias,
-                            query_args,
-                        )
-                    if isinstance(executable, ScriptCommand):
-                        status.update(f"Running script '{executable.name}'...")
-                        return await self.script_manager.run_script(
-                            self.state,
-                            self.service,
-                            executable.name,
-                            executable.args,
-                            piped_input,
-                        )
+                    if isinstance(
+                        executable, (FlowCommand, QueryCommand, ScriptCommand)
+                    ):
+                        # For these commands, the universal formatters are parsed as part of their
+                        # arguments dictionary. We do NOT need to clean them here, as the top-level
+                        # `execute` method already separates them. This logic can be simplified.
+                        if isinstance(executable, FlowCommand):
+                            status.update(f"Running flow '{executable.name}'...")
+                            return await self.flow_manager.run_flow(
+                                self.state,
+                                self.service,
+                                executable.name,
+                                executable.args,
+                            )
+                        if isinstance(executable, QueryCommand):
+                            on_alias = executable.named_args.get("on_alias")
+                            query_args = executable.named_args.get("args", {})
+                            status.update(
+                                f"Running query '{executable.name}' on '{on_alias}'..."
+                            )
+                            return await self.query_manager.run_query(
+                                self.state,
+                                self.service,
+                                executable.name,
+                                on_alias,
+                                query_args,
+                            )
+                        if isinstance(executable, ScriptCommand):
+                            status.update(f"Running script '{executable.name}'...")
+                            return await self.script_manager.run_script(
+                                self.state,
+                                self.service,
+                                executable.name,
+                                executable.args,
+                                piped_input,
+                            )
+
                     if isinstance(
                         executable, (DotNotationCommand, PositionalArgActionCommand)
                     ):
@@ -639,7 +511,6 @@ class CommandExecutor:
                             self.state, self.service, status, piped_input=piped_input
                         )
             else:
-                # Lightweight management commands are dispatched here.
                 return await self._dispatch_management_command(
                     executable, is_agent_execution
                 )
@@ -650,15 +521,56 @@ class CommandExecutor:
         self, command: Command, is_agent_execution: bool
     ) -> Any:
         """
-        Routes management commands, returning a result tailored to the execution context
-        (human-readable for users, machine-readable for the agent).
+        Routes management commands. Data-producing commands (like 'list') return
+        structured data for the handler to process. Action-performing commands
+        manage their own interactive output or return simple confirmation messages.
         """
+
+        # --- SECTION 1: DATA-PRODUCING MANAGEMENT COMMANDS ---
+        # These commands return structured data (e.g., a list of dicts) that the
+        # IOutputHandler will be responsible for rendering.
+
+        if hasattr(command, "subcommand") and command.subcommand == "list":
+            if isinstance(command, ConnectionCommand):
+                return self.connection_manager.list_connections()
+            if isinstance(command, FlowCommand):
+                return self.flow_manager.list_flows()
+            if isinstance(command, QueryCommand):
+                return self.query_manager.list_queries()
+            if isinstance(command, ScriptCommand):
+                return self.script_manager.list_scripts()
+            if isinstance(command, SessionCommand):
+                return self.session_manager.list_sessions()
+            if isinstance(command, VariableCommand):
+                return self.variable_manager.list_variables(self.state)
+            if isinstance(command, AppCommand):
+                return await self.app_manager.list_installed_apps()
+            if isinstance(command, ProcessCommand):
+                return self.process_manager.list_processes()
+
+        if isinstance(command, AppCommand) and command.subcommand == "search":
+            return await self.app_manager.search(command.args.get("query"))
+
+        if isinstance(command, InspectCommand):
+            return await command.execute(self.state, self.service, None)
+
+        # Built-in 'connections' command is a special case of a data-producing command.
+        if isinstance(command, BuiltinCommand) and command.command == "connections":
+            connections_list = [
+                {"Alias": alias, "Source": source}
+                for alias, source in self.state.connections.items()
+            ]
+            return connections_list
+
+        # --- SECTION 2: ACTION-PERFORMING MANAGEMENT COMMANDS ---
+        # These commands perform an action, manage their own interactive output,
+        # or return a simple string confirmation.
+
         command_prints_own_output = False
         simple_confirmation_message = None
 
-        # --- Command Logic Dispatch ---
-
         if isinstance(command, BuiltinCommand):
+            # This handles 'connect' and 'help'
             command_prints_own_output = True
             handler = self.builtin_commands.get(command.command)
             if handler:
@@ -666,46 +578,25 @@ class CommandExecutor:
                     handler
                 ) else handler(command.args)
 
-        elif isinstance(command, ConnectionCommand):
-            if command.subcommand == "list":
-                self.connection_manager.list_connections()
-                command_prints_own_output = True
-            elif command.subcommand == "create":
-                await self.connection_manager.create_interactive(
-                    command.named_args.get("blueprint")
-                )
-                command_prints_own_output = True
+        elif isinstance(command, ConnectionCommand) and command.subcommand == "create":
+            await self.connection_manager.create_interactive(
+                command.named_args.get("blueprint")
+            )
+            command_prints_own_output = True
 
         elif isinstance(command, AppCommand):
             command_prints_own_output = True
-            if command.subcommand == "list":
-                await self.app_manager.list_installed_apps()
-            elif command.subcommand == "install":
+            if command.subcommand == "install":
                 await self.app_manager.install(command.args)
             elif command.subcommand == "uninstall":
                 await self.app_manager.uninstall(command.args["id"])
             elif command.subcommand == "package":
                 await self.app_manager.package(command.args["path"])
-            elif command.subcommand == "search":
-                await self.app_manager.search(command.args["query"])
-
-        elif isinstance(command, (FlowCommand, QueryCommand, ScriptCommand)):
-            if command.subcommand == "list":
-                command_prints_own_output = True
-                if isinstance(command, FlowCommand):
-                    self.flow_manager.list_flows()
-                elif isinstance(command, QueryCommand):
-                    self.query_manager.list_queries()
-                elif isinstance(command, ScriptCommand):
-                    self.script_manager.list_scripts()
 
         elif isinstance(command, SessionCommand):
-            if command.subcommand in ["list", "status"]:
+            if command.subcommand == "status":
+                self.session_manager.show_status(self.state)
                 command_prints_own_output = True
-                if command.subcommand == "list":
-                    self.session_manager.list_sessions()
-                elif command.subcommand == "status":
-                    self.session_manager.show_status(self.state)
             elif command.subcommand == "save":
                 simple_confirmation_message = self.session_manager.save_session(
                     self.state, command.arg
@@ -717,14 +608,10 @@ class CommandExecutor:
             elif command.subcommand == "load":
                 return self.session_manager.load_session(command.arg)
 
-        elif isinstance(command, VariableCommand):
-            if command.subcommand == "list":
-                self.variable_manager.list_variables(self.state)
-                command_prints_own_output = True
-            elif command.subcommand == "rm":
-                simple_confirmation_message = self.variable_manager.delete_variable(
-                    self.state, command.arg
-                )
+        elif isinstance(command, VariableCommand) and command.subcommand == "rm":
+            simple_confirmation_message = self.variable_manager.delete_variable(
+                self.state, command.arg
+            )
 
         elif isinstance(command, OpenCommand):
             command_prints_own_output = True
@@ -739,182 +626,31 @@ class CommandExecutor:
                 on_alias,
             )
 
-        elif isinstance(command, ProcessCommand):
+        elif isinstance(command, ProcessCommand) and command.subcommand == "logs":
             command_prints_own_output = True
-            if command.subcommand == "list":
-                self.process_manager.list_processes()
-            elif command.subcommand == "logs":
-                self.process_manager.get_logs(command.arg, command.follow)
+            self.process_manager.get_logs(command.arg, command.follow)
 
         elif isinstance(command, CompileCommand):
             command_prints_own_output = True
-            spec_url = command.named_args.get("spec_url")
-            name = command.named_args.get("name")
-            version = command.named_args.get("version")
+            await self.compile_manager.run_compile(**command.named_args)
 
-            if not spec_url or not name or not version:
-                raise ValueError(
-                    "The compile command requires --spec-url, --name, and --version arguments."
-                )
-
-            await self.compile_manager.run_compile(
-                spec_source=spec_url,
-                name=name,
-                version=version,
-                namespace=command.named_args.get("namespace", "user"),
-            )
         elif isinstance(command, AgentCommand):
             command_prints_own_output = True
             await self.orchestrator.start_session(command.goal)
 
-        elif isinstance(command, InspectCommand):
-            # Inspect is special: it returns data to be formatted by _print_result,
-            # so it does not handle its own output.
-            return await command.execute(self.state, self.service, None)
-
-        # --- Context-Aware Return Logic ---
-
+        # --- Context-Aware Return Logic for Action-Performing Commands ---
         if is_agent_execution:
             return {
                 "status": "success",
                 "message": f"Management command '{type(command).__name__}' executed successfully.",
             }
-        else:  # Human execution
+        else:
             if simple_confirmation_message:
                 return simple_confirmation_message
             if command_prints_own_output:
                 return None
-
-            # Fallback for any other case
+            # Fallback for any unhandled case
             return {"status": "success", "message": "Command executed."}
-
-    def _print_result(self, result: Any, executable: Any, options: dict | None = None):
-        """
-        Handles the final rendering of a command's result to the console.
-        This method is the final stage of the execution pipeline and is responsible
-        for all user-facing output, intelligently suppressing redundant messages.
-        """
-        # --- Stage 1: Handle Terminal Cases & UX-Specific Suppression ---
-        if result is None:
-            return
-
-        options = options or {}
-
-        # Suppress the generic success JSON for commands that print their own rich output.
-        is_generic_success_message = (
-            isinstance(result, dict)
-            and result.get("status") == "success"
-            and "executed successfully" in result.get("message", "")
-        )
-        is_list_command = (
-            hasattr(executable, "subcommand") and executable.subcommand == "list"
-        )
-        is_connections_command = (
-            isinstance(executable, BuiltinCommand)
-            and executable.command == "connections"
-        )
-
-        # If the command was a 'list'-style command AND the user has not added any
-        # formatters (like --query), we assume the manager has already printed a
-        # table, so we suppress the final JSON to avoid clutter.
-        if (
-            is_generic_success_message
-            and (is_list_command or is_connections_command)
-            and not options
-        ):
-            return
-
-        # Handle simple string confirmation messages (e.g., from session save/delete).
-        if isinstance(result, str):
-            console.print(f"[bold green]✓[/bold green] {result}")
-            return
-
-        # Handle the special panel format for the 'inspect' command.
-        if isinstance(executable, InspectCommand):
-            summary = result
-            panel_content = (
-                f"[bold]Variable:[/bold] [cyan]{summary['var_name']}[/cyan]\n"
-            )
-            panel_content += f"[bold]Type:[/bold] [green]{summary['type']}[/green]\n"
-            if "length" in summary:
-                panel_content += f"[bold]Length:[/bold] {summary['length']}\n"
-            if "keys" in summary:
-                panel_content += f"[bold]Keys:[/bold] {summary['keys']}"
-            if "item_zero_keys" in summary:
-                panel_content += (
-                    f"[bold]Item[0] Keys:[/bold] {summary['item_zero_keys']}"
-                )
-            if "item_zero_preview" in summary:
-                panel_content += (
-                    f"[bold]Item[0] Preview:[/bold] {summary['item_zero_preview']}"
-                )
-            if "value_preview" in summary:
-                panel_content += (
-                    f"[bold]Value Preview:[/bold] {summary['value_preview']}"
-                )
-            console.print(
-                Panel(panel_content, title="Object Inspector", border_style="yellow")
-            )
-            return
-
-        # Handle generic runtime errors that may have been passed through the pipeline.
-        if isinstance(result, dict) and "error" in result:
-            console.print(f"[bold red]Runtime Error:[/bold red] {result['error']}")
-            return
-
-        # --- Stage 2: Data Processing & Filtering ---
-
-        # Intelligently unpack the raw result to get to the core data payload.
-        data_to_process = result
-        if isinstance(data_to_process, dict):
-            if "results" in data_to_process:
-                data_to_process = data_to_process["results"]
-            elif "data" in data_to_process:
-                data_to_process = data_to_process["data"]
-            elif "content" in data_to_process:
-                try:
-                    data_to_process = json.loads(data_to_process["content"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-        # Apply the JMESPath query to the unpacked data before any rendering.
-        data_to_render = data_to_process
-        if options.get("query"):
-            try:
-                data_to_render = jmespath.search(options["query"], data_to_process)
-            except Exception as e:
-                console.print(f"[bold red]JMESPath Error:[/bold red] {e}")
-                return
-
-        # --- Stage 3: Output Rendering ---
-
-        output_mode = options.get("output_mode", "default")
-
-        # Render as a table if requested and if the data is a list of objects.
-        if (
-            output_mode == "table"
-            and isinstance(data_to_render, list)
-            and data_to_render
-        ):
-            if all(isinstance(i, dict) for i in data_to_render):
-                table = Table(title="Data View", box=box.ROUNDED, show_lines=True)
-                headers = options.get("columns") or list(data_to_render[0].keys())
-                for header in headers:
-                    table.add_column(str(header), style="cyan", overflow="fold")
-                for row in data_to_render:
-                    table.add_row(*(str(row.get(h, "")) for h in headers))
-                console.print(table)
-                return
-
-        # Default to printing pretty JSON for all other data-producing cases.
-        # This also handles the generic success message if it wasn't suppressed above.
-        try:
-            formatted_json = json.dumps(data_to_render, indent=2, default=str)
-            syntax = Syntax(formatted_json, "json", theme="monokai", line_numbers=True)
-            console.print(syntax)
-        except (TypeError, OverflowError):
-            # Fallback for non-serializable objects (should be rare).
-            console.print(Pretty(data_to_render))
 
     async def _dispatch_builtin(self, command: Command) -> Any:
         """Routes built-in and management commands to the correct handler."""

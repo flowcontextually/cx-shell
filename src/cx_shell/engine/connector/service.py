@@ -23,6 +23,7 @@ from .providers.sql.trino_strategy import TrinoStrategy
 from .providers.fs.declarative_fs_strategy import DeclarativeFilesystemStrategy
 from .providers.py.sandboxed_python_strategy import SandboxedPythonStrategy
 from .providers.internal.smart_fetcher_strategy import SmartFetcherStrategy
+from .providers.browser.strategy import DeclarativeBrowserStrategy
 from ...state import APP_STATE
 
 
@@ -95,6 +96,7 @@ class ConnectorService:
             TrinoStrategy,
             DeclarativeFilesystemStrategy,
             SandboxedPythonStrategy,
+            DeclarativeBrowserStrategy,
         ]
 
         # A temporary dictionary to hold the instances we create

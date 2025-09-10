@@ -1,16 +1,11 @@
 import yaml
-from typing import Dict, Any
-
-from rich.console import Console
-from rich.table import Table
-from rich import box
+from typing import List, Dict, Any
 
 from ..engine.connector.config import CX_HOME
 from ..engine.connector.service import ConnectorService
 from ..interactive.session import SessionState
 
 FLOWS_DIR = CX_HOME / "flows"
-console = Console()
 
 
 class FlowManager:
@@ -19,29 +14,32 @@ class FlowManager:
     def __init__(self):
         FLOWS_DIR.mkdir(exist_ok=True, parents=True)
 
-    def list_flows(self):
-        flows = list(FLOWS_DIR.glob("*.flow.yaml"))
-        if not flows:
-            console.print("No flows found in ~/.cx/flows/")
-            return
+    def list_flows(self) -> List[Dict[str, str]]:
+        """Lists all available flows, returning structured data."""
+        flows_data = []
+        flow_files = list(FLOWS_DIR.glob("*.flow.yaml"))
+        if not flow_files:
+            return flows_data
 
-        table = Table(title="Available Flows", box=box.ROUNDED)
-        table.add_column("Flow Name", style="cyan")
-        table.add_column("Description", style="dim", overflow="fold")
-
-        for flow_file in sorted(flows):
+        for flow_file in sorted(flow_files):
             try:
                 with open(flow_file, "r") as f:
                     data = yaml.safe_load(f)
                     description = data.get("description", "No description.")
-                # Use flow_file.stem to get the filename without the extension.
-                table.add_row(flow_file.stem.replace(".flow", ""), description)
-            except Exception:
-                table.add_row(
-                    f"[red]{flow_file.stem}[/red]", "[red]Error reading file[/red]"
+                flows_data.append(
+                    {
+                        "Name": flow_file.stem.replace(".flow", ""),
+                        "Description": description,
+                    }
                 )
-
-        console.print(table)
+            except Exception:
+                flows_data.append(
+                    {
+                        "Name": f"[red]{flow_file.stem}[/red]",
+                        "Description": "[red]Error reading file[/red]",
+                    }
+                )
+        return flows_data
 
     async def run_flow(
         self,
@@ -54,14 +52,11 @@ class FlowManager:
         if not flow_file.exists():
             raise FileNotFoundError(f"Flow '{name}' not found at {flow_file}")
 
-        with open(flow_file, "r") as f:
-            script_data = yaml.safe_load(f)
+        # We need the console here for user feedback in the REPL
+        from rich.console import Console
 
-        # The 'args' dict from the command line becomes the script_input
-        console.print(f"[bold blue]Running flow '{name}'...[/bold blue]")
+        Console().print(f"[bold blue]Running flow '{name}'...[/bold blue]")
+
         return await service.engine.run_script(
-            flow_file,
-            script_input=args,
-            # We don't pass session_variables here by default, to keep flows self-contained.
-            # This is a design choice we can revisit if needed.
+            flow_file, script_input=args, session_variables=state.variables
         )

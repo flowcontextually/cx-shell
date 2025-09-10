@@ -26,33 +26,35 @@ class ConnectionManager:
         self.secrets_dir.mkdir(exist_ok=True, parents=True)
         self.registry_manager = RegistryManager()  # ADD THIS
 
-    def list_connections(self):
-        """Lists all locally configured connections."""
+    def list_connections(self) -> list[dict]:  # Change return type
+        """Lists all locally configured connections, returning data."""
+        connections_data = []
         if not any(self.connections_dir.iterdir()):
-            console.print(
-                "No connections found. Create one with `cx connection create`."
-            )
-            return
-
-        table = Table(title="Local Connections")
-        table.add_column("Name", style="cyan")
-        table.add_column("ID", style="green")
-        table.add_column("Blueprint ID", style="magenta")
+            # Return an empty list instead of printing
+            return connections_data
 
         for conn_file in sorted(self.connections_dir.glob("*.conn.yaml")):
             try:
                 with open(conn_file, "r") as f:
                     data = yaml.safe_load(f)
                     conn_id = data.get("id", "user:N/A").split(":", 1)[1]
-                    table.add_row(
-                        data.get("name", "N/A"),
-                        conn_id,
-                        data.get("api_catalog_id", "N/A"),
+                    connections_data.append(
+                        {
+                            "Name": data.get("name", "N/A"),
+                            "ID": conn_id,
+                            "Blueprint ID": data.get("api_catalog_id", "N/A"),
+                        }
                     )
             except Exception:
-                table.add_row(f"[red]Error parsing: {conn_file.name}[/red]", "", "")
+                connections_data.append(
+                    {
+                        "Name": f"[red]Error parsing: {conn_file.name}[/red]",
+                        "ID": "",
+                        "Blueprint ID": "",
+                    }
+                )
 
-        console.print(table)
+        return connections_data  # Return the structured data
 
     async def create_interactive(
         self, preselected_blueprint_id: Optional[str] = None

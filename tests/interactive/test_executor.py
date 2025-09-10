@@ -6,11 +6,16 @@ from cx_shell.interactive.session import SessionState
 
 @pytest.fixture
 def executor(clean_cx_home):
-    """Provides a clean executor with a mocked service for each test."""
-    state = SessionState(is_interactive=False)  # Use non-interactive for tests
-    executor_instance = CommandExecutor(state)
+    """Provides a clean executor with a mocked service and output handler for each test."""
+    state = SessionState(is_interactive=False)
 
-    # Mock the service layer to isolate the executor's parsing and state management logic.
+    # --- THIS IS THE FIX ---
+    # Create an AsyncMock for the output handler.
+    mock_output_handler = AsyncMock()
+    # --- END FIX ---
+
+    executor_instance = CommandExecutor(state, mock_output_handler)
+
     executor_instance.service = AsyncMock()
     executor_instance.connection_manager.create_interactive = AsyncMock()
 
@@ -54,7 +59,12 @@ async def test_executor_session_persistence(executor: CommandExecutor):
     await executor.execute("session save test-persistence")
 
     # Arrange: Create a new, empty executor to simulate a restart.
-    new_executor = CommandExecutor(SessionState(is_interactive=False))
+    # --- THIS IS THE FIX ---
+    # We must provide the required 'output_handler' argument.
+    new_executor = CommandExecutor(
+        SessionState(is_interactive=False), output_handler=AsyncMock()
+    )
+    # --- END FIX ---
 
     # Act: Load the session.
     loaded_state = await new_executor.execute("session load test-persistence")

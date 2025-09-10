@@ -9,7 +9,7 @@ import asyncio
 
 from ..interactive.session import SessionState
 from ..data.agent_schemas import AgentConfig
-from ..engine.connector.config import CX_HOME
+from ..utils import CX_HOME
 
 logger = structlog.get_logger(__name__)
 AGENT_CONFIG_FILE = CX_HOME / "agents.config.yaml"
