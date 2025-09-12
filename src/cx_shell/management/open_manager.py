@@ -2,6 +2,7 @@
 
 import sys
 import subprocess
+from typing import Any
 import webbrowser
 from pathlib import Path
 import os
@@ -96,8 +97,24 @@ class OpenManager:
         asset_name: str | None,
         handler_name: str,
         on_alias: str | None,
+        piped_input: Any = None,
     ):
         """Finds an asset and dispatches it to the correct handler."""
+        if piped_input:
+            if isinstance(piped_input, str):
+                path_to_open = Path(piped_input)
+                if path_to_open.exists():
+                    self.handlers.get(handler_name, self._handle_default_open)(
+                        path_to_open
+                    )
+                    return
+                else:
+                    raise FileNotFoundError(f"Piped path does not exist: {piped_input}")
+            else:
+                # If piped input isn't a string, it's an error for the open command.
+                raise TypeError(
+                    f"The 'open' command received piped input of type '{type(piped_input).__name__}' but expected a string file path."
+                )
         if on_alias:
             console.print(
                 f"[yellow]Note: Remote 'open' on connection '{on_alias}' is a future feature.[/yellow]"

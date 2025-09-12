@@ -52,8 +52,11 @@ class TransformerService:
         log.info("service.run.begin")
 
         initial_input = run_context.get("initial_input")
-        if not initial_input:
-            raise ValueError("Transformer service received no input data.")
+        # Allow empty lists as valid input, but raise error for None/missing input.
+        if initial_input is None:
+            raise ValueError(
+                "Transformer service received no 'initial_input' in its context."
+            )
 
         # Intelligently unpack the data from common wrapper formats.
         unpacked_data = initial_input

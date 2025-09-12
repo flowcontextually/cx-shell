@@ -9,6 +9,7 @@ import jmespath
 import structlog
 import yaml
 import networkx as nx
+from ...utils import CX_HOME
 
 
 from jinja2 import Environment
@@ -59,6 +60,15 @@ class ScriptEngine:
         self.jinja_env = Environment()
         self.jinja_env.filters["sqlquote"] = sql_quote_filter
 
+        # Define and register the 'now' function as a global in the Jinja environment.
+        def get_now(tz: str | None = None) -> datetime:
+            """A Jinja-friendly wrapper for datetime.now."""
+            if tz and tz.lower() == "utc":
+                return datetime.now(timezone.utc)
+            return datetime.now()
+
+        self.jinja_env.globals["now"] = get_now
+
     def _build_dependency_graph(self, steps: list[ConnectorStep]) -> nx.DiGraph:
         """Parses script steps and builds a NetworkX dependency graph."""
         dag = nx.DiGraph()
@@ -88,27 +98,35 @@ class ScriptEngine:
         run_context: Dict,
         debug_mode: bool,
         session_variables: Dict[str, Any] = None,
-        # --- NEW PARAMETERS FOR STATEFUL EXECUTION ---
         active_session: Any = None,
         stateful_strategy: Any = None,
     ) -> Any:
         log = logger.bind(step_id=step.id, step_name=step.name)
-        session_vars = session_variables or {}
 
+        # 1. First, build the base context with global and session variables.
+        base_render_context = {
+            "CX_HOME": str(CX_HOME.resolve()),
+            "steps": run_context.get("steps", {}),
+            "script_input": run_context.get("script_input", {}),
+            **(session_variables or {}),
+        }
+
+        # 2. Extract the step's `run` block as a dictionary.
+        run_block_dict = step.run.model_dump()
+
+        # 3. Merge the run block into the base context. This makes keys like
+        #    'metadata' directly available to templates within the same run block.
+        full_render_context = {**base_render_context, **run_block_dict}
+
+        # 2. Define a robust, recursive rendering function.
         def recursive_render(data: Any, context: Dict):
-            """
-            Recursively renders Jinja templates.
-            Crucially, if a string is JUST a single Jinja block, it evaluates
-            it to its native Python type instead of casting to a string.
-            """
             if isinstance(data, dict):
                 return {k: recursive_render(v, context) for k, v in data.items()}
             if isinstance(data, list):
                 return [recursive_render(i, context) for i in data]
-
             if isinstance(data, str):
+                # Heuristic for native type evaluation (e.g., "{{ my_list }}")
                 stripped_data = data.strip()
-                # Heuristic: if the string is ONLY a Jinja block, evaluate it.
                 if (
                     stripped_data.startswith("{{")
                     and stripped_data.endswith("}}")
@@ -116,91 +134,67 @@ class ScriptEngine:
                 ):
                     expression = stripped_data[2:-2].strip()
                     try:
-                        # Compile and run the expression to get the native object
                         compiled_expr = self.jinja_env.compile_expression(expression)
                         return compiled_expr(**context)
                     except Exception:
-                        # Fallback to string rendering on error
-                        pass
-
-                # For interpolation ("Hello {{ name }}") or fallbacks, render as string.
+                        pass  # Fallback to string rendering on error
+                # Standard string interpolation
                 if "{{" in data:
                     return self.jinja_env.from_string(data).render(**context)
-
             return data
 
+        # 3. Render the ENTIRE step object and re-validate it.
+        # This is the crucial step that ensures templates in fields like
+        # `connection_source` and `query` are processed correctly.
         try:
-            full_render_context = {**run_context, **session_vars}
-            rendered_action_data = recursive_render(
-                step.run.model_dump(), full_render_context
+            rendered_step_data = recursive_render(
+                step.model_dump(), full_render_context
             )
-            action = type(step.run)(**rendered_action_data)
+            validated_step = ConnectorStep(**rendered_step_data)
+            action = validated_step.run
+            connection_source = validated_step.connection_source
         except Exception as e:
             log.error(
-                "Failed to render action parameters.", error=str(e), exc_info=True
+                "Failed to render or validate step parameters.",
+                error=str(e),
+                exc_info=True,
             )
             raise ValueError(
-                f"Failed to render action parameters for step '{step.name}': {e}"
+                f"Failed to render parameters for step '{step.name}': {e}"
             ) from e
 
-        # --- NEW: Stateful Action Dispatcher ---
-        # If the action is a browser action, delegate to the stateful strategy.
+        # --- END OF RENDERING LOGIC ---
+
+        # --- Action Dispatcher ---
+        # It now uses the fully rendered and validated step data.
+
         if action.action.startswith("browser_"):
             if not active_session or not stateful_strategy:
                 raise RuntimeError(
-                    "A browser action was called, but no active browser session was found. Ensure your flow has a 'session_provider: browser' key and a connection step."
+                    "A browser action was called, but no active browser session was found."
                 )
-
-            # Convert the Pydantic action model into the `CommandInfo` dict structure
-            # that the migrated `AgentSession` expects.
             command_info = {
                 "command_type": action.action.replace("browser_", "", 1),
-                "name": step.name,
+                "name": validated_step.name,
                 "text": getattr(action, "text", getattr(action, "url", None)),
                 "element_info": {
                     "locators": {"css_selector": getattr(action, "target", None)}
                 },
             }
-
-            # The step ID is used for observability (screenshots, logs, etc.)
-            # A simple heuristic to get a numeric index for the agent.
-            step_index = 0
-            try:
-                # Attempt to parse a numeric index from the step ID for better reporting
-                step_index = int("".join(filter(str.isdigit, step.id)))
-            except ValueError:
-                pass  # Default to 0 if no numbers are in the ID
-
+            step_index = (
+                int("".join(filter(str.isdigit, validated_step.id)))
+                if any(char.isdigit() for char in validated_step.id)
+                else 0
+            )
             return await stateful_strategy.execute_step(
                 active_session, command_info, step_index
             )
 
-        # --- EXISTING: Stateless Action Dispatcher ---
-        # This logic handles all non-browser actions.
-
         connection, secrets, strategy = None, None, None
-
-        # A special case for the browser setup step: it only needs to exist to trigger
-        # the session, but doesn't perform a stateless action itself. We return a
-        # success message and continue.
-        if (
-            hasattr(step.run, "action")
-            and step.run.action == "browser_navigate"
-            and step.depends_on is None
-        ):
-            if active_session:
-                return {
-                    "status": "success",
-                    "message": "Browser session configured and ready.",
-                }
-
-        if step.connection_source:
-            connection, secrets = await self.resolver.resolve(step.connection_source)
+        if connection_source:
+            connection, secrets = await self.resolver.resolve(connection_source)
             strategy = self.connector._get_strategy_for_connection_model(connection)
 
-        # This step is a special kind of "no-op" for the stateful session setup.
-        # It's only purpose is to be resolved so the engine can start the session.
-        # Once the session is started, this step's work is done.
         if (
             stateful_strategy
             and strategy
@@ -208,13 +202,10 @@ class ScriptEngine:
         ):
             return {
                 "status": "success",
-                "message": f"Browser session setup step '{step.name}' completed.",
+                "message": f"Session setup step '{validated_step.name}' completed.",
             }
 
         if action.action == "run_transform":
-            log.info(
-                "Executing native transform action.", script_path=action.script_path
-            )
             transformer_run_context = {
                 "initial_input": action.input_data.get("data", []),
                 "query_parameters": action.input_data.get("query_parameters", {}),
@@ -229,34 +220,10 @@ class ScriptEngine:
 
         if not strategy:
             raise ValueError(
-                f"Step '{step.name}' requires a connection_source, but none was provided or resolved for a stateless action."
+                f"Step '{validated_step.name}' requires a connection_source for a stateless action."
             )
 
-        if action.action == "test_connection":
-            return await strategy.test_connection(connection, secrets)
-        elif action.action == "run_declarative_action":
-            return await strategy.run_declarative_action(
-                connection,
-                secrets,
-                action.model_dump(),
-                run_context.get("script_input", {}),
-                debug_mode,
-            )
-        elif action.action == "browse_path":
-            response = await strategy.browse_path(
-                action.path.strip("/").split("/"), connection, secrets
-            )
-            if isinstance(response, httpx.Response):
-                return self._transform_browse_response(
-                    response, connection, action.path
-                )
-            return response
-        elif action.action == "read_content":
-            path_parts = [action.path]
-            vfs_response = await strategy.get_content(path_parts, connection, secrets)
-            final_result_for_user = vfs_response.model_dump()
-            return final_result_for_user
-        elif action.action == "run_sql_query":
+        if action.action == "run_sql_query":
             query_source = action.query
             query_string = ""
             if query_source.startswith(("file:", "app-asset:")):
@@ -264,23 +231,33 @@ class ScriptEngine:
                 query_string = query_path.read_text(encoding="utf-8")
             else:
                 query_string = query_source
-            query_data = await strategy.execute_query(
+            return await strategy.execute_query(
                 query_string, action.parameters, connection, secrets
             )
-            return {"parameters": action.parameters, "data": query_data}
-        elif hasattr(strategy, action.action):
+
+        # This handles all other standard actions like run_declarative_action, read_content, etc.
+        # It relies on the strategy implementing a method with the same name as the action.
+        if hasattr(strategy, action.action):
             method_to_call = getattr(strategy, action.action)
+
+            # --- THIS IS THE DEFINITIVE FIX ---
+            # These specific strategies do not require the 'secrets' argument.
             if action.action in [
-                "aggregate_content",
                 "run_python_script",
                 "write_files",
+                "aggregate_content",
             ]:
                 return await method_to_call(
                     connection, action.model_dump(), run_context.get("script_input", {})
                 )
             else:
-                return await method_to_call(connection, action.model_dump())
-
+                # All other strategies follow the standard (connection, secrets, ...) signature.
+                return await method_to_call(
+                    connection,
+                    secrets,
+                    action.model_dump(),
+                    run_context.get("script_input", {}),
+                )
         raise NotImplementedError(
             f"Action '{action.action}' is not implemented or supported by the '{strategy.strategy_key}' strategy."
         )
@@ -428,6 +405,7 @@ class ScriptEngine:
         script_path: Path,
         script_input: Dict[str, Any] = {},
         debug_mode: bool = False,
+        session_variables: Dict[str, Any] = None,
     ):
         log = logger.bind(script_path=str(script_path))
         log.info("DAG-based ScriptEngine running script from file.")
@@ -438,7 +416,9 @@ class ScriptEngine:
         script_model = ConnectorScript(**script_data)
 
         # Delegate the core execution logic to the new model-based runner
-        return await self.run_script_model(script_model, script_input, debug_mode)
+        return await self.run_script_model(
+            script_model, script_input, debug_mode, session_variables
+        )
 
     def _transform_browse_response(
         self, response: httpx.Response, connection: "Connection", vfs_path: str

@@ -1,3 +1,4 @@
+from pathlib import Path
 import yaml
 from typing import List, Dict, Any
 
@@ -48,15 +49,29 @@ class FlowManager:
         name: str,
         args: Dict[str, Any],
     ) -> Any:
-        flow_file = FLOWS_DIR / f"{name}.flow.yaml"
-        if not flow_file.exists():
-            raise FileNotFoundError(f"Flow '{name}' not found at {flow_file}")
+        flow_path = Path(name)
 
-        # We need the console here for user feedback in the REPL
+        if not flow_path.is_absolute():
+            flow_path = FLOWS_DIR / f"{name}.flow.yaml"
+
+        if not flow_path.exists():
+            raise FileNotFoundError(f"Flow '{name}' not found at {flow_path}")
+
+        # We need a console instance for user feedback in the REPL
         from rich.console import Console
 
         Console().print(f"[bold blue]Running flow '{name}'...[/bold blue]")
 
+        with open(flow_path, "r") as f:
+            # We don't need to load the data here, the engine does that.
+            pass
+
+        # --- THIS IS THE DEFINITIVE FIX ---
+        # The ScriptEngine's run_script method is the correct place to handle
+        # reading the file and running it. We must pass both the command-line
+        # arguments (as script_input) and the session's variables for a complete
+        # Jinja rendering context.
         return await service.engine.run_script(
-            flow_file, script_input=args, session_variables=state.variables
+            script_path=flow_path, script_input=args, session_variables=state.variables
         )
+        # --- END FIX ---

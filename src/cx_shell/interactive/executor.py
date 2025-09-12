@@ -66,38 +66,17 @@ class CommandTransformer(Transformer):
     """Transforms the Lark parse tree into our executable Command objects."""
 
     def expression(self, pipeline):
-        print(f"--- [TRANSFORMER] expression -> pipeline: {pipeline}")
         return pipeline
 
     def pipeline(self, *items):
-        # --- THIS IS THE FINAL, CORRECTED LOGIC ---
-        # The 'items' tuple contains both our command_unit results (which are tuples)
-        # and the separator Tokens ('|').
-        # We filter the list to keep only the tuples, effectively discarding the VBAR tokens.
-
-        command_units = [item for item in items if isinstance(item, tuple)]
-        # print("command_units")
-        # print(command_units)
-
-        return PipelineCommand(command_units)
+        return PipelineCommand(list(items))
 
     def command_unit(self, executable, formatter=None):
         merged_options = {}
         if formatter:
             for option_dict in formatter:
                 merged_options.update(option_dict)
-
-        # This method should return a tuple
-        result_tuple = (executable, merged_options or None)
-        print(f"--- [TRANSFORMER] command_unit -> returning tuple: {result_tuple}")
-        return result_tuple
-
-    def command_line(self, executable, formatter=None):
-        merged_options = {}
-        if formatter:
-            for option_dict in formatter:
-                merged_options.update(option_dict)
-        return executable, merged_options or None
+        return (executable, merged_options or None)
 
     def executable(self, exec_obj):
         return exec_obj
@@ -105,8 +84,8 @@ class CommandTransformer(Transformer):
     def single_executable(self, exec_obj):
         return exec_obj
 
-    def assignment(self, var_name, executable):
-        return AssignmentCommand(var_name.value, executable)
+    def assignment(self, var_name, expression):
+        return AssignmentCommand(var_name.value, expression)
 
     def single_command(self, command):
         return command
@@ -195,10 +174,16 @@ class CommandTransformer(Transformer):
     def connection_subcommand(self, cmd_obj):
         return cmd_obj
 
+    def open_command(self, cmd_obj):
+        return cmd_obj
+
     def app_command(self, cmd_obj):
         return cmd_obj
 
     def app_subcommand(self, cmd_obj):
+        return cmd_obj
+
+    def compile_command(self, cmd_obj):
         return cmd_obj
 
     def process_command(self, cmd_obj):
@@ -207,7 +192,41 @@ class CommandTransformer(Transformer):
     def process_subcommand(self, cmd_obj):
         return cmd_obj
 
-    # --- Methods for specific subcommands ---
+    # --- THIS IS THE FINAL, CORRECTED SET OF HANDLERS ---
+    def open_args(self, *args):
+        return list(args)
+
+    def open_command_handler(self, open_args=None):
+        args = open_args or []
+        positional_args = [
+            arg.value
+            for arg in args
+            if hasattr(arg, "type") and arg.type in ("ARG", "JINJA_BLOCK")
+        ]
+        named_args_list = [arg for arg in args if isinstance(arg, tuple)]
+        asset_type = positional_args[0] if len(positional_args) > 0 else None
+        asset_name = positional_args[1] if len(positional_args) > 1 else None
+        args_dict = {key.lstrip("-"): value for key, value in named_args_list}
+        return OpenCommand(asset_type, asset_name, args_dict)
+
+    def connection_create(self, *named_args):
+        args_dict = {key.lstrip("-"): value for key, value in named_args}
+        return ConnectionCommand("create", named_args=args_dict)
+
+    def compile_command_with_args(self, *named_args):
+        args_dict = {
+            key.lstrip("-").replace("-", "_"): value for key, value in named_args
+        }
+        return CompileCommand(named_args=args_dict)
+
+    def app_install(self, *named_args):
+        args_dict = dict(named_args)
+        # We need to preserve the '--' for the manager to distinguish sources
+        cleaned_args = {key: v for key, v in args_dict.items()}
+        return AppCommand("install", args=cleaned_args)
+
+    # --- END FINAL FIX ---
+
     def session_list(self):
         return SessionCommand("list")
 
@@ -233,6 +252,9 @@ class CommandTransformer(Transformer):
         return FlowCommand("list")
 
     def flow_run(self, name, *kv_pairs):
+        # print("kv_pairs")
+        # print(kv_pairs)
+        # print(dict(kv_pairs))
         return FlowCommand("run", name=name.value, args=dict(kv_pairs))
 
     def query_list(self):
@@ -254,34 +276,8 @@ class CommandTransformer(Transformer):
     def connection_list(self):
         return ConnectionCommand("list")
 
-    def connection_create(self, command_args=None):
-        args_dict = {key.lstrip("-"): value for key, value in (command_args or [])}
-        return ConnectionCommand("create", named_args=args_dict)
-
-    def open_command_with_args(
-        self, asset_type_token, asset_name_token=None, command_args=None
-    ):
-        asset_type = asset_type_token.value
-        asset_name = asset_name_token.value if asset_name_token else None
-        args_dict = {key.lstrip("-"): value for key, value in (command_args or [])}
-        return OpenCommand(asset_type, asset_name, args_dict)
-
     def app_list(self):
         return AppCommand("list", args={})
-
-    def app_install(self, command_args):
-        args_dict = dict(command_args)
-        source_keys = {"--id", "--path", "--url"}
-        provided_keys = set(args_dict.keys())
-        if len(provided_keys.intersection(source_keys)) != 1:
-            raise ValueError(
-                "`app install` requires exactly one of --id, --path, or --url."
-            )
-        # --- THIS IS THE FIX ---
-        # Changed 'k' to 'key' to match the loop variable.
-        cleaned_args = {key.lstrip("-"): v for key, v in args_dict.items()}
-        # --- END FIX ---
-        return AppCommand("install", args=cleaned_args)
 
     def app_uninstall(self, arg):
         return AppCommand("uninstall", args={"id": arg.value})
@@ -293,14 +289,7 @@ class CommandTransformer(Transformer):
         return AppCommand("package", args={"path": arg.value})
 
     def app_search(self, query=None):
-        query_val = query.value if query else None
-        return AppCommand("search", args={"query": query_val})
-
-    def compile_command_with_args(self, command_args):
-        args_dict = {
-            key.lstrip("-").replace("-", "_"): value for key, value in command_args
-        }
-        return CompileCommand(named_args=args_dict)
+        return AppCommand("search", args={"query": query.value if query else None})
 
     def process_list(self):
         return ProcessCommand("list")
@@ -312,9 +301,6 @@ class CommandTransformer(Transformer):
         return ProcessCommand("stop", arg.value)
 
     # --- Argument & Terminal Processing ---
-    def command_args(self, *named_args):
-        return list(named_args)
-
     def arguments(self, *args):
         return dict(args)
 
@@ -548,13 +534,13 @@ class CommandExecutor:
                         )
             else:
                 return await self._dispatch_management_command(
-                    executable, is_agent_execution
+                    executable, is_agent_execution, piped_input=piped_input
                 )
 
         raise TypeError(f"Cannot execute object of type: {type(executable).__name__}")
 
     async def _dispatch_management_command(
-        self, command: Command, is_agent_execution: bool
+        self, command: Command, is_agent_execution: bool, piped_input: Any = None
     ) -> Any:
         """
         Routes management commands. Data-producing commands (like 'list') return
@@ -660,6 +646,7 @@ class CommandExecutor:
                 command.asset_name,
                 handler,
                 on_alias,
+                piped_input=piped_input,
             )
 
         elif isinstance(command, ProcessCommand) and command.subcommand == "logs":
