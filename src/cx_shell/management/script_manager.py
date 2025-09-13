@@ -1,13 +1,13 @@
+# [REPLACE] /home/dpwanjala/repositories/cx-shell/src/cx_shell/management/script_manager.py
+
 import json
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, List, Tuple
 
-from rich.console import Console
-from rich.table import Table
-from rich import box
-
-from ..engine.connector.config import CX_HOME
+import structlog
 from ..engine.connector.service import ConnectorService
 from ..interactive.session import SessionState
+from .workspace_manager import WorkspaceManager  # <-- NEW IMPORT
 from ..engine.connector.utils import safe_serialize
 from cx_core_schemas.connector_script import (
     ConnectorScript,
@@ -15,63 +15,106 @@ from cx_core_schemas.connector_script import (
     RunPythonScriptAction,
 )
 
-SCRIPTS_DIR = CX_HOME / "scripts"
-console = Console()
+logger = structlog.get_logger(__name__)
 
 
 class ScriptManager:
-    """Handles logic for listing and running .py files."""
+    """Handles logic for listing and running .py files from the multi-rooted workspace."""
 
     def __init__(self):
-        SCRIPTS_DIR.mkdir(exist_ok=True, parents=True)
+        """Initializes the manager with the WorkspaceManager."""
+        self.workspace_manager = WorkspaceManager()
 
-    def list_scripts(self):
-        scripts = list(SCRIPTS_DIR.glob("*.py"))
-        if not scripts:
-            console.print("No scripts found in ~/.cx/scripts/")
-            return
+    def _get_search_paths(self) -> List[Tuple[str, Path]]:
+        """Defines the prioritized search paths for scripts."""
+        search_paths = []
+        all_roots = self.workspace_manager.get_roots()
 
-        table = Table(title="Available Scripts", box=box.ROUNDED)
-        table.add_column("Script Name", style="cyan")
-        for script_file in sorted(scripts):
-            table.add_row(script_file.stem)
-        console.print(table)
+        for root_path in all_roots:
+            namespace = "system" if ".cx" in str(root_path) else root_path.name
+            script_dir = root_path / "scripts"
+            search_paths.append((namespace, script_dir))
+
+        return search_paths
+
+    def list_scripts(self) -> List[Dict[str, str]]:
+        """Lists all available scripts from all registered workspace roots."""
+        scripts_data = []
+        found_names = set()
+
+        for namespace, search_path in self._get_search_paths():
+            if not search_path.is_dir():
+                continue
+
+            for script_file in sorted(search_path.glob("*.py")):
+                script_name = script_file.stem
+                namespaced_id = f"{namespace}/{script_name}"
+                if namespaced_id in found_names:
+                    continue
+                found_names.add(namespaced_id)
+
+                scripts_data.append(
+                    {
+                        "Name": namespaced_id,
+                        "Description": "Python script.",
+                        "Source": namespace,
+                    }
+                )
+        return scripts_data
+
+    def _find_script(self, name: str) -> Path:
+        """Finds a script by its potentially namespaced name across all workspace roots."""
+        if "/" in name:
+            namespace, script_name = name.split("/", 1)
+            for ns, search_path in self._get_search_paths():
+                if ns == namespace:
+                    script_path = search_path / f"{script_name}.py"
+                    if script_path.exists():
+                        return script_path
+        else:
+            for _, search_path in self._get_search_paths():
+                script_path = search_path / f"{name}.py"
+                if script_path.exists():
+                    return script_path
+
+        raise FileNotFoundError(
+            f"Script '{name}' not found in any registered workspace root."
+        )
 
     async def run_script(
         self,
         state: SessionState,
         service: ConnectorService,
-        name: str,
-        args: Dict[str, Any],
+        named_args: Dict[str, Any],
         piped_input: Any,
     ) -> Any:
-        script_file = SCRIPTS_DIR / f"{name}.py"
-        if not script_file.exists():
-            raise FileNotFoundError(f"Script '{name}' not found at {script_file}")
+        """Executes a Python script by name, finding it in the multi-rooted workspace."""
+        logger.debug(
+            "script_manager.run_script.received",
+            named_args=named_args,
+            has_piped_input=piped_input is not None,
+        )
 
-        # --- THIS IS THE DEFINITIVE FIX ---
-        # The input data passed to the script's stdin.
-        input_for_script = piped_input
+        name = named_args.pop("name", None)
+        params = named_args.get("params", {})
 
-        # The arguments passed to the script's command line (sys.argv)
-        # We will pass the user-provided args as a JSON string to avoid complex quoting.
-        script_args_list = []
-        if args:
-            script_args_list.append(json.dumps(args))
-        # --- END FIX ---
+        if not name:
+            raise ValueError("`script run` requires a '--name <script_name>' argument.")
 
-        serializable_input = safe_serialize(input_for_script)
+        script_file = self._find_script(name)
+        logger.info("script_manager.run_script.resolved", script_path=str(script_file))
+
+        script_args_list = [json.dumps(params)] if params else []
+        serializable_input = safe_serialize(piped_input)
 
         step = ConnectorStep(
-            id=f"run_script_{name}",
+            id=f"run_script_{name.replace('/', '_')}",
             name=f"Run Python Script: {name}",
             connection_source="user:system_python_sandbox",
             run=RunPythonScriptAction(
                 action="run_python_script",
                 script_path=str(script_file),
-                # The input data is now just the piped content
                 input_data_json=json.dumps(serializable_input),
-                # The arguments are passed separately
                 args=script_args_list,
             ),
         )
@@ -79,7 +122,6 @@ class ScriptManager:
             name=f"Interactive Script run for {name}.py", steps=[step]
         )
 
-        console.print(f"[bold blue]Running script '{name}'...[/bold blue]")
         results = await service.engine.run_script_model(
             script, session_variables=state.variables
         )

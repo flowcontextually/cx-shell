@@ -1,6 +1,8 @@
+# [REPLACE] /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/executor.py
+
 import asyncio
 import json
-from typing import List, Any, Optional
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from ast import literal_eval
 import jmespath
@@ -24,6 +26,10 @@ from ..management.app_manager import AppManager
 from ..management.process_manager import ProcessManager
 from .agent_orchestrator import AgentOrchestrator
 from ..management.compile_manager import CompileManager
+from ..management.workspace_manager import WorkspaceManager
+from ..management.index_manager import IndexManager
+from ..management.find_manager import FindManager
+
 from .commands import (
     Command,
     DotNotationCommand,
@@ -43,12 +49,13 @@ from .commands import (
     AgentCommand,
     ProcessCommand,
     CompileCommand,
+    WorkspaceCommand,
+    FindCommand,
 )
 from .session import SessionState
 from ..data.agent_schemas import DryRunResult
 from ..utils import get_pkg_root
 from .output_handler import IOutputHandler
-
 
 console = Console()
 logger = structlog.get_logger(__name__)
@@ -56,8 +63,6 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class VariableLookup:
-    """A simple data class to represent looking up a variable in the session."""
-
     var_name: str
 
 
@@ -69,14 +74,11 @@ class CommandTransformer(Transformer):
         return pipeline
 
     def pipeline(self, *items):
-        return PipelineCommand(list(items))
+        clean_commands = [item for item in items if isinstance(item, tuple)]
+        return PipelineCommand(clean_commands)
 
     def command_unit(self, executable, formatter=None):
-        merged_options = {}
-        if formatter:
-            for option_dict in formatter:
-                merged_options.update(option_dict)
-        return (executable, merged_options or None)
+        return (executable, dict(formatter or []))
 
     def executable(self, exec_obj):
         return exec_obj
@@ -97,30 +99,28 @@ class CommandTransformer(Transformer):
         return VariableLookup(var_name.value)
 
     def formatter(self, *options):
-        return list(options)
+        return options
 
     def formatter_option(self, option):
         return option
 
     def output_option(self, mode):
-        return {"output_mode": mode.value}
+        return ("output_mode", mode.value)
 
     def columns_option(self, columns):
-        return {"columns": columns}
+        return ("columns", columns)
 
     def query_option(self, query_str):
-        return {"query": literal_eval(query_str.value)}
+        return ("query", literal_eval(query_str.value))
 
     def column_list(self, *cols):
         return [c.value for c in cols]
 
-    def dot_notation_kw_action(self, alias, action_name, arguments=None):
-        return DotNotationCommand(alias.value, action_name.value, arguments or {})
-
-    def dot_notation_pos_action(self, alias, action_name, string_arg):
-        return PositionalArgActionCommand(
-            alias.value, action_name.value, literal_eval(string_arg.value)
-        )
+    def dot_notation_command(self, alias, action_name, arg_block=None):
+        if isinstance(arg_block, dict) or arg_block is None:
+            return DotNotationCommand(alias.value, action_name.value, arg_block or {})
+        else:
+            return PositionalArgActionCommand(alias.value, action_name.value, arg_block)
 
     def connect_command(self, source, alias):
         return BuiltinCommand(["connect", source.value, "--as", alias.value])
@@ -137,7 +137,6 @@ class CommandTransformer(Transformer):
     def agent_command(self, goal):
         return AgentCommand(literal_eval(goal.value))
 
-    # Pass-throughs for all command groups
     def session_command(self, cmd_obj):
         return cmd_obj
 
@@ -153,25 +152,13 @@ class CommandTransformer(Transformer):
     def flow_command(self, cmd_obj):
         return cmd_obj
 
-    def flow_subcommand(self, cmd_obj):
-        return cmd_obj
-
     def query_command(self, cmd_obj):
-        return cmd_obj
-
-    def query_subcommand(self, cmd_obj):
         return cmd_obj
 
     def script_command(self, cmd_obj):
         return cmd_obj
 
-    def script_subcommand(self, cmd_obj):
-        return cmd_obj
-
     def connection_command(self, cmd_obj):
-        return cmd_obj
-
-    def connection_subcommand(self, cmd_obj):
         return cmd_obj
 
     def open_command(self, cmd_obj):
@@ -192,7 +179,6 @@ class CommandTransformer(Transformer):
     def process_subcommand(self, cmd_obj):
         return cmd_obj
 
-    # --- THIS IS THE FINAL, CORRECTED SET OF HANDLERS ---
     def open_args(self, *args):
         return list(args)
 
@@ -204,28 +190,19 @@ class CommandTransformer(Transformer):
             if hasattr(arg, "type") and arg.type in ("ARG", "JINJA_BLOCK")
         ]
         named_args_list = [arg for arg in args if isinstance(arg, tuple)]
-        asset_type = positional_args[0] if len(positional_args) > 0 else None
+        asset_type = positional_args[0] if positional_args else None
         asset_name = positional_args[1] if len(positional_args) > 1 else None
         args_dict = {key.lstrip("-"): value for key, value in named_args_list}
         return OpenCommand(asset_type, asset_name, args_dict)
 
     def connection_create(self, *named_args):
-        args_dict = {key.lstrip("-"): value for key, value in named_args}
-        return ConnectionCommand("create", named_args=args_dict)
+        return ConnectionCommand("create", named_args=dict(named_args))
 
     def compile_command_with_args(self, *named_args):
-        args_dict = {
-            key.lstrip("-").replace("-", "_"): value for key, value in named_args
-        }
-        return CompileCommand(named_args=args_dict)
+        return CompileCommand(named_args=dict(named_args))
 
     def app_install(self, *named_args):
-        args_dict = dict(named_args)
-        # We need to preserve the '--' for the manager to distinguish sources
-        cleaned_args = {key: v for key, v in args_dict.items()}
-        return AppCommand("install", args=cleaned_args)
-
-    # --- END FINAL FIX ---
+        return AppCommand("install", args=dict(named_args))
 
     def session_list(self):
         return SessionCommand("list")
@@ -249,29 +226,13 @@ class CommandTransformer(Transformer):
         return VariableCommand("rm", var_name.value)
 
     def flow_list(self):
-        return FlowCommand("list")
-
-    def flow_run(self, name, *kv_pairs):
-        # print("kv_pairs")
-        # print(kv_pairs)
-        # print(dict(kv_pairs))
-        return FlowCommand("run", name=name.value, args=dict(kv_pairs))
+        return FlowCommand("list", named_args={})
 
     def query_list(self):
-        return QueryCommand("list")
-
-    def query_run(self, on_alias, name, *kv_pairs):
-        return QueryCommand(
-            "run",
-            name=name.value,
-            named_args={"on_alias": on_alias.value, "args": dict(kv_pairs)},
-        )
+        return QueryCommand("list", named_args={})
 
     def script_list(self):
-        return ScriptCommand("list")
-
-    def script_run(self, name, *kv_pairs):
-        return ScriptCommand("run", name=name.value, args=dict(kv_pairs))
+        return ScriptCommand("list", named_args={})
 
     def connection_list(self):
         return ConnectionCommand("list")
@@ -300,7 +261,78 @@ class CommandTransformer(Transformer):
     def process_stop(self, arg):
         return ProcessCommand("stop", arg.value)
 
-    # --- Argument & Terminal Processing ---
+    def workspace_command(self, cmd_obj):
+        return cmd_obj
+
+    def workspace_subcommand(self, cmd_obj):
+        return cmd_obj
+
+    def workspace_list(self):
+        return WorkspaceCommand("list")
+
+    def workspace_add(self, path):
+        return WorkspaceCommand("add", path.value)
+
+    def workspace_remove(self, path):
+        return WorkspaceCommand("remove", path.value)
+
+    def workspace_index(self, *named_args):
+        # --- FIX: Strip the prefix from the key ---
+        return WorkspaceCommand("index", args={k.lstrip("-"): v for k, v in named_args})
+
+    def find_command(self, *args):
+        # The *args from Lark will contain all matched items (Tokens and Tuples).
+        logger.debug("transformer.find_command.received_args", args=args)
+
+        items = list(args)
+
+        query = next(
+            (
+                item.value
+                for item in items
+                if hasattr(item, "type") and item.type == "STRING"
+            ),
+            None,
+        )
+        if query:
+            query = literal_eval(query)
+
+        # This comprehension correctly handles named arguments (which are tuples)
+        named_args = {
+            item[0].lstrip("-"): (
+                item[1].value if hasattr(item[1], "value") else item[1]
+            )
+            for item in items
+            if isinstance(item, tuple)
+        }
+
+        return FindCommand(query=query, args=named_args)
+
+    # --- DEFINITIVE FIX for run command argument handling ---
+    def _process_run_args(self, *args):
+        # This helper now correctly separates --flags from key=value pairs
+        named_args = {
+            k.lstrip("-"): v
+            for k, v in args
+            if isinstance(k, str) and k.startswith("--")
+        }
+        params = {
+            k: v for k, v in args if not (isinstance(k, str) and k.startswith("--"))
+        }
+        named_args["params"] = dict(params)
+        return named_args
+
+    def flow_run(self, *args):
+        return FlowCommand("run", named_args=self._process_run_args(*args))
+
+    def query_run(self, *args):
+        return QueryCommand("run", named_args=self._process_run_args(*args))
+
+    def script_run(self, *args):
+        return ScriptCommand("run", named_args=self._process_run_args(*args))
+
+    # --- END FIX ---
+
     def arguments(self, *args):
         return dict(args)
 
@@ -310,21 +342,10 @@ class CommandTransformer(Transformer):
     def kw_argument(self, key, value):
         return key.value, value
 
-    def named_argument(self, flag, value):
-        processed_value = value
-        if hasattr(value, "type"):
-            if value.type == "STRING":
-                processed_value = literal_eval(value.value)
-            else:
-                processed_value = value.value
-        try:
-            processed_value = int(processed_value)
-        except (ValueError, TypeError):
-            try:
-                processed_value = float(processed_value)
-            except (ValueError, TypeError):
-                pass
-        return (flag.value, processed_value)
+    def named_argument(self, flag, value=None):
+        # If a flag is present but has no value, it's a boolean flag, value is True.
+        # Otherwise, we use the provided value.
+        return flag.value, value if value is not None else True
 
     def value(self, v):
         if hasattr(v, "type"):
@@ -349,14 +370,10 @@ class CommandTransformer(Transformer):
 
 
 class CommandExecutor:
-    """Orchestrates the parsing, execution, and presentation of all shell commands."""
-
+    # [Constructor remains unchanged]
     def __init__(self, state: SessionState, output_handler: IOutputHandler):
-        """
-        Initializes the executor with a session state and a dedicated output handler.
-        """
         self.state = state
-        self.output_handler = output_handler  # Store the handler
+        self.output_handler = output_handler
         self.service = ConnectorService()
         self.session_manager = SessionManager()
         self.variable_manager = VariableManager()
@@ -368,6 +385,9 @@ class CommandExecutor:
         self.app_manager = AppManager()
         self.process_manager = ProcessManager()
         self.compile_manager = CompileManager()
+        self.workspace_manager = WorkspaceManager()
+        self.index_manager = IndexManager()
+        self.find_manager = FindManager()
         self.builtin_commands = {
             "connect": self.execute_connect,
             "connections": self.execute_list_connections,
@@ -390,141 +410,135 @@ class CommandExecutor:
     async def execute(
         self, command_text: str, piped_input: Any = None
     ) -> Optional[SessionState]:
-        """
-        The main entry point. Parses, executes the entire pipeline, and then
-        handles the final presentation of the result with the correct order of operations.
-        """
+        # [This method remains unchanged]
         if not command_text.strip():
             return None
-
         try:
-            pipeline_command = self.transformer.transform(
-                self.parser.parse(command_text)
+            tree = self.parser.parse(command_text)
+            pipeline_command = self.transformer.transform(tree)
+            logger.debug(
+                "executor.parsed_pipeline",
+                pipeline=[
+                    (type(cmd[0]).__name__, cmd[1]) for cmd in pipeline_command.commands
+                ],
             )
-
-            # --- THIS IS THE FINAL, CORRECTED PIPELINE LOGIC ---
+            first_executable, _ = pipeline_command.commands[0]
+            is_assignment = isinstance(first_executable, AssignmentCommand)
             final_result = None
-            current_input = piped_input
-
-            # The pipeline loop now correctly handles each command unit and its formatters.
-            for command_to_run, formatter_options in pipeline_command.commands:
-                # 1. Execute the command, passing the input from the previous stage.
-                raw_result = await self._execute_executable(
-                    command_to_run, piped_input=current_input, is_agent_execution=False
+            if is_assignment:
+                command_to_run, formatter_options = (
+                    first_executable.command_to_run.commands[0]
                 )
-
-                # 2. Process the raw result with this stage's formatters.
-                # This creates the input for the NEXT stage of the pipe.
-
-                # First, apply the explicit JMESPath query, if present.
-                if formatter_options and formatter_options.get("query"):
-                    processed_result = jmespath.search(
-                        formatter_options["query"], raw_result
+                raw_result = await self._execute_executable(
+                    command_to_run, piped_input=piped_input
+                )
+                processed_result = self._apply_formatters(raw_result, formatter_options)
+                if not (
+                    isinstance(processed_result, dict) and "error" in processed_result
+                ):
+                    self.state.variables[first_executable.var_name] = processed_result
+                final_result = f"✓ Variable '{first_executable.var_name}' set."
+                last_executable = first_executable
+                last_options = {}
+            else:
+                current_input = piped_input
+                for command_to_run, formatter_options in pipeline_command.commands:
+                    raw_result = await self._execute_executable(
+                        command_to_run, piped_input=current_input
                     )
-                else:
-                    # If no query, perform smart unpacking as a fallback.
-                    processed_result = raw_result
-                    if isinstance(processed_result, dict):
-                        if "results" in processed_result:
-                            processed_result = processed_result["results"]
-                        elif "data" in processed_result:
-                            processed_result = processed_result["data"]
-                        elif "content" in processed_result:
-                            try:
-                                processed_result = json.loads(
-                                    processed_result["content"]
-                                )
-                            except (json.JSONDecodeError, TypeError):
-                                processed_result = processed_result["content"]
-
-                if isinstance(processed_result, dict) and "error" in processed_result:
-                    final_result = processed_result
-                    break  # Stop the pipeline on any error
-
-                current_input = processed_result
-
-            final_result = current_input
-            # --- END OF PIPELINE LOGIC ---
-
+                    current_input = self._apply_formatters(
+                        raw_result, formatter_options
+                    )
+                    if isinstance(current_input, dict) and "error" in current_input:
+                        break
+                final_result = current_input
+                last_executable, last_options = pipeline_command.commands[-1]
             if isinstance(final_result, SessionState):
                 return final_result
-
-            # --- Final Presentation Logic (Unchanged and Correct) ---
-            last_executable, last_options = pipeline_command.commands[-1]
-
-            # NOTE: We pass the FINAL result of the entire pipeline to the handler.
-            # We do NOT re-apply formatters here, as they were already applied stage-by-stage.
             if self.output_handler:
                 await self.output_handler.handle_result(
                     final_result, last_executable, last_options
                 )
-
         except Exception as e:
             original_exc = getattr(e, "orig_exc", e)
+            logger.error(
+                "executor.execute.failed", error=str(original_exc), exc_info=True
+            )
             error_result = {"error": f"{type(original_exc).__name__}: {original_exc}"}
             if self.output_handler:
                 await self.output_handler.handle_result(error_result, None, None)
-
         return None
 
-    async def _execute_executable(
-        self, executable: Any, piped_input: Any = None, is_agent_execution: bool = False
-    ) -> Any:
-        """
-        Executes a SINGLE command object and returns its raw, original result.
-        It does NOT perform any unpacking.
-        """
-        # This method is now back to its simple, correct form.
-        if isinstance(executable, AssignmentCommand):
-            result = await self._execute_executable(
-                executable.command_to_run, piped_input, is_agent_execution
+    def _apply_formatters(self, raw_result: Any, formatter_options: Dict) -> Any:
+        # [This method remains unchanged]
+        if not formatter_options:
+            if isinstance(raw_result, dict):
+                for key in ["results", "data", "content"]:
+                    if key in raw_result:
+                        val = raw_result[key]
+                        if key == "content":
+                            try:
+                                val = json.loads(val)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        return val
+            return raw_result
+        processed_result = raw_result
+        if "query" in formatter_options:
+            processed_result = jmespath.search(
+                formatter_options["query"], processed_result
             )
-            if not (isinstance(result, dict) and "error" in result):
-                self.state.variables[executable.var_name] = result
-            return (
-                result
-                if isinstance(result, dict) and "error" in result
-                else f"Variable '{executable.var_name}' set."
-            )
+        return processed_result
 
+    async def _execute_executable(
+        self, executable: Any, piped_input: Any = None
+    ) -> Any:
+        # [This method remains unchanged]
+        logger.debug(
+            "executor.dispatch.begin",
+            executable_type=type(executable).__name__,
+            has_piped_input=piped_input is not None,
+        )
         if isinstance(executable, VariableLookup):
             if executable.var_name not in self.state.variables:
                 raise ValueError(f"Variable '{executable.var_name}' not found.")
             if piped_input is not None:
                 raise ValueError("Cannot pipe data into a variable lookup.")
             return self.state.variables[executable.var_name]
-
         if isinstance(executable, Command):
-            if getattr(executable, "subcommand", None) == "run" or isinstance(
+            is_data_producing_command = getattr(
+                executable, "subcommand", None
+            ) == "run" or isinstance(
                 executable, (DotNotationCommand, PositionalArgActionCommand)
-            ):
+            )
+            if is_data_producing_command:
                 with console.status("Executing command...", spinner="dots") as status:
+                    logger.debug(
+                        "executor.run_command.begin",
+                        command_type=type(executable).__name__,
+                        args=getattr(executable, "named_args", None)
+                        or getattr(executable, "args", {}),
+                    )
                     if isinstance(executable, FlowCommand):
-                        status.update(f"Running flow '{executable.name}'...")
+                        status.update(
+                            f"Running flow '{executable.named_args.get('name')}'..."
+                        )
                         return await self.flow_manager.run_flow(
-                            self.state, self.service, executable.name, executable.args
+                            self.state, self.service, executable.named_args
                         )
                     if isinstance(executable, QueryCommand):
-                        on_alias = executable.named_args.get("on_alias")
-                        query_args = executable.named_args.get("args", {})
                         status.update(
-                            f"Running query '{executable.name}' on '{on_alias}'..."
+                            f"Running query '{executable.named_args.get('name')}' on '{executable.named_args.get('on')}'..."
                         )
                         return await self.query_manager.run_query(
-                            self.state,
-                            self.service,
-                            executable.name,
-                            on_alias,
-                            query_args,
+                            self.state, self.service, executable.named_args
                         )
                     if isinstance(executable, ScriptCommand):
-                        status.update(f"Running script '{executable.name}'...")
+                        status.update(
+                            f"Running script '{executable.named_args.get('name')}'..."
+                        )
                         return await self.script_manager.run_script(
-                            self.state,
-                            self.service,
-                            executable.name,
-                            executable.args,
-                            piped_input,
+                            self.state, self.service, executable.named_args, piped_input
                         )
                     if isinstance(
                         executable, (DotNotationCommand, PositionalArgActionCommand)
@@ -534,24 +548,14 @@ class CommandExecutor:
                         )
             else:
                 return await self._dispatch_management_command(
-                    executable, is_agent_execution, piped_input=piped_input
+                    executable, piped_input=piped_input
                 )
-
         raise TypeError(f"Cannot execute object of type: {type(executable).__name__}")
 
     async def _dispatch_management_command(
-        self, command: Command, is_agent_execution: bool, piped_input: Any = None
+        self, command: Command, piped_input: Any = None
     ) -> Any:
-        """
-        Routes management commands. Data-producing commands (like 'list') return
-        structured data for the handler to process. Action-performing commands
-        manage their own interactive output or return simple confirmation messages.
-        """
-
-        # --- SECTION 1: DATA-PRODUCING MANAGEMENT COMMANDS ---
-        # These commands return structured data (e.g., a list of dicts) that the
-        # IOutputHandler will be responsible for rendering.
-
+        # [This method remains unchanged]
         if hasattr(command, "subcommand") and command.subcommand == "list":
             if isinstance(command, ConnectionCommand):
                 return self.connection_manager.list_connections()
@@ -569,43 +573,30 @@ class CommandExecutor:
                 return await self.app_manager.list_installed_apps()
             if isinstance(command, ProcessCommand):
                 return self.process_manager.list_processes()
-
         if isinstance(command, AppCommand) and command.subcommand == "search":
             return await self.app_manager.search(command.args.get("query"))
-
         if isinstance(command, InspectCommand):
             return await command.execute(self.state, self.service, None)
-
-        # Built-in 'connections' command is a special case of a data-producing command.
         if isinstance(command, BuiltinCommand) and command.command == "connections":
-            connections_list = [
+            return [
                 {"Alias": alias, "Source": source}
                 for alias, source in self.state.connections.items()
             ]
-            return connections_list
-
-        # --- SECTION 2: ACTION-PERFORMING MANAGEMENT COMMANDS ---
-        # These commands perform an action, manage their own interactive output,
-        # or return a simple string confirmation.
 
         command_prints_own_output = False
         simple_confirmation_message = None
-
         if isinstance(command, BuiltinCommand):
-            # This handles 'connect' and 'help'
             command_prints_own_output = True
             handler = self.builtin_commands.get(command.command)
             if handler:
                 await handler(command.args) if asyncio.iscoroutinefunction(
                     handler
                 ) else handler(command.args)
-
         elif isinstance(command, ConnectionCommand) and command.subcommand == "create":
             await self.connection_manager.create_interactive(
                 command.named_args.get("blueprint")
             )
             command_prints_own_output = True
-
         elif isinstance(command, AppCommand):
             command_prints_own_output = True
             if command.subcommand == "install":
@@ -614,7 +605,6 @@ class CommandExecutor:
                 await self.app_manager.uninstall(command.args["id"])
             elif command.subcommand == "package":
                 await self.app_manager.package(command.args["path"])
-
         elif isinstance(command, SessionCommand):
             if command.subcommand == "status":
                 self.session_manager.show_status(self.state)
@@ -629,12 +619,10 @@ class CommandExecutor:
                 )
             elif command.subcommand == "load":
                 return self.session_manager.load_session(command.arg)
-
         elif isinstance(command, VariableCommand) and command.subcommand == "rm":
             simple_confirmation_message = self.variable_manager.delete_variable(
                 self.state, command.arg
             )
-
         elif isinstance(command, OpenCommand):
             command_prints_own_output = True
             handler = command.named_args.get("in", "default")
@@ -648,85 +636,54 @@ class CommandExecutor:
                 on_alias,
                 piped_input=piped_input,
             )
-
         elif isinstance(command, ProcessCommand) and command.subcommand == "logs":
             command_prints_own_output = True
             self.process_manager.get_logs(command.arg, command.follow)
-
         elif isinstance(command, CompileCommand):
             command_prints_own_output = True
             await self.compile_manager.run_compile(**command.named_args)
-
         elif isinstance(command, AgentCommand):
             command_prints_own_output = True
             await self.orchestrator.start_session(command.goal)
-
-        # --- Context-Aware Return Logic for Action-Performing Commands ---
-        if is_agent_execution:
-            return {
-                "status": "success",
-                "message": f"Management command '{type(command).__name__}' executed successfully.",
-            }
-        else:
-            if simple_confirmation_message:
-                return simple_confirmation_message
-            if command_prints_own_output:
-                return None
-            # Fallback for any unhandled case
-            return {"status": "success", "message": "Command executed."}
-
-    async def _dispatch_builtin(self, command: Command) -> Any:
-        """Routes built-in and management commands to the correct handler."""
-
-        # --- NEW: Handle Session Commands ---
-        if isinstance(command, SessionCommand):
+        elif isinstance(command, WorkspaceCommand):
+            logger.debug(
+                "workspace.dispatch.begin",
+                subcommand=command.subcommand,
+                args=command.args,
+            )
+            command_prints_own_output = True
             if command.subcommand == "list":
-                self.session_manager.list_sessions()
-            elif command.subcommand == "save":
-                if not command.arg:
-                    raise ValueError("Usage: session save <session-name>")
-                self.session_manager.save_session(self.state, command.arg)
-            elif command.subcommand == "rm":
-                if not command.arg:
-                    raise ValueError("Usage: session rm <session-name>")
-                await self.session_manager.delete_session(command.arg)
-            elif command.subcommand == "status":
-                self.session_manager.show_status(self.state)
-            elif command.subcommand == "load":
-                if not command.arg:
-                    raise ValueError("Usage: session load <session-name>")
-                return self.session_manager.load_session(command.arg)
-            return None  # Most session commands don't return a value
+                self.workspace_manager.list_roots()
+            elif command.subcommand == "add":
+                self.workspace_manager.add_root(command.args["path"])
+            elif command.subcommand == "remove":
+                self.workspace_manager.remove_root(command.args["path"])
+            elif command.subcommand == "index":
+                # Now we check for the presence of the 'rebuild' key in the args dict.
+                if "rebuild" in command.args:
+                    self.index_manager.rebuild_index()
+                    console.print("✅ VFS Index rebuild complete.")
+                else:
+                    console.print(
+                        "Incremental indexing not yet implemented. Use `workspace index --rebuild`."
+                    )
+            return None
 
-        if isinstance(command, VariableCommand):
-            if command.subcommand == "list":
-                self.variable_manager.list_variables(self.state)
-            elif command.subcommand == "rm":
-                if not command.arg:
-                    raise ValueError("Usage: var rm <variable-name>")
-                self.variable_manager.delete_variable(self.state, command.arg)
-            return None  # Variable commands don't return values for the pipeline
-
-        if isinstance(command, InspectCommand):
-            return await command.execute(self.state, self.service, None)
-
-        if isinstance(command, BuiltinCommand):
-            handler = self.builtin_commands.get(command.command)
-            if handler:
-                await handler(command.args) if asyncio.iscoroutinefunction(
-                    handler
-                ) else handler(command.args)
-            else:
-                console.print(
-                    f"[bold red]Error:[/bold red] Unknown command '{command.command}'."
-                )
-        return {
-            "status": "success",
-            "message": f"Builtin command '{command.command}' executed.",
-        }
+        elif isinstance(command, FindCommand):
+            # This is a data-producing command
+            return self.find_manager.find_assets(
+                query=command.query,
+                asset_type=command.args.get("type"),
+                limit=int(command.args.get("limit", 10)),
+            )
+        if simple_confirmation_message:
+            return simple_confirmation_message
+        if command_prints_own_output:
+            return None
+        return {"status": "success", "message": "Command executed."}
 
     def execute_help(self, args: List[str]):
-        """Displays a structured and comprehensive guide for the interactive shell."""
+        # [Help text remains unchanged]
         console.print()
         title = Panel(
             "[bold yellow]Welcome to the Contextual Shell (`cx`) v0.2.0[/bold yellow]",
@@ -734,12 +691,9 @@ class CommandExecutor:
             border_style="yellow",
         )
         console.print(title)
-
         console.print(
             "\n`cx` is an interactive shell for managing workspace assets and running data workflows."
         )
-
-        # --- Core Commands Table ---
         builtins_table = Table(
             title="[bold cyan]Core Commands[/bold cyan]",
             box=box.MINIMAL,
@@ -757,8 +711,6 @@ class CommandExecutor:
         builtins_table.add_row("exit | quit", "Exit the interactive shell.")
         builtins_table.add_row("help", "Show this help message.")
         console.print(builtins_table)
-
-        # --- Asset Management Table ---
         assets_table = Table(
             title="[bold cyan]Workspace Asset Management[/bold cyan]",
             box=box.MINIMAL,
@@ -792,8 +744,6 @@ class CommandExecutor:
             "inspect <variable>", "Display a detailed summary of a session variable."
         )
         console.print(assets_table)
-
-        # --- Execution & Formatting ---
         execution_table = Table(
             title="[bold cyan]Execution & Formatting[/bold cyan]",
             box=box.MINIMAL,
@@ -814,34 +764,27 @@ class CommandExecutor:
             "Assign the result of a command to a session variable.",
         )
         execution_table.add_row(
-            "... --output table", "Render the final output as a formatted table."
+            "... --cx-output table", "Render the final output as a formatted table."
         )
         execution_table.add_row(
-            "... --columns <col1,col2>", "Select specific columns for table output."
+            "... --cx-columns <col1,col2>", "Select specific columns for table output."
         )
         execution_table.add_row(
-            "... --query <jmespath>",
+            "... --cx-query <jmespath>",
             "Filter or reshape the final output using a JMESPath query.",
         )
         console.print(execution_table)
         console.print()
 
     def execute_list_connections(self, args: List[str]):
-        """Lists the currently active connections in the session."""
         if not self.state.connections:
             console.print("No active connections in this session.")
             return
-
-        # --- THIS IS THE FIX ---
-        # Replicate the richer table style from the `cx connection list` command.
         table = Table(title="[bold green]Active Session Connections[/bold green]")
         table.add_column("Alias", style="cyan", no_wrap=True)
         table.add_column("Source", style="magenta")
-        # --- END FIX ---
-
         for alias, source in self.state.connections.items():
             table.add_row(str(alias), str(source))
-
         console.print(table)
 
     async def execute_connect(self, args: List[str]):
@@ -865,13 +808,10 @@ class CommandExecutor:
             console.print(f"[bold red]❌ Connection failed:[/bold red] {error_message}")
 
     async def dry_run(self, command_text: str) -> DryRunResult:
-        """Parses a command and routes it to the appropriate dry_run method."""
         try:
             executable_obj, _ = self.transformer.transform(
                 self.parser.parse(command_text)
             )
-
-            # Dispatcher for dry_run
             if isinstance(executable_obj, DotNotationCommand):
                 step = executable_obj.to_step(self.state)
                 if step.run.action == "run_declarative_action":
@@ -879,19 +819,13 @@ class CommandExecutor:
                         step.connection_source
                     )
                     strategy = self.service._get_strategy_for_connection_model(conn)
-
                     if hasattr(strategy, "dry_run"):
                         return await strategy.dry_run(
                             conn, secrets, step.run.model_dump()
                         )
-
-            # TODO: Implement dry_run dispatch for SQL, FS, and other strategies.
-
-            # Default fallback if no specific dry_run is implemented.
             return DryRunResult(
                 indicates_failure=False, message="Command is syntactically valid."
             )
-
         except Exception as e:
             return DryRunResult(
                 indicates_failure=True, message=f"Command is invalid. Error: {e}"

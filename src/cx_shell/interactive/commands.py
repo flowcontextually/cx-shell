@@ -1,6 +1,6 @@
 from abc import ABC
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 
 # Rich imports are only for type hinting, not for direct use.
 from rich.status import Status
@@ -303,17 +303,11 @@ class VariableCommand(Command):
 
 
 class FlowCommand(Command):
-    """Represents a flow management command, e.g., `flow list` or `flow run my-flow`."""
+    """Represents a flow management command, e.g., `flow list` or `flow run`."""
 
-    def __init__(
-        self,
-        subcommand: str,
-        name: str | None = None,
-        args: Dict[str, Any] | None = None,
-    ):
+    def __init__(self, subcommand: str, named_args: Dict[str, Any]):
         self.subcommand = subcommand
-        self.name = name
-        self.args = args or {}
+        self.named_args = named_args
 
     async def execute(
         self,
@@ -328,17 +322,11 @@ class FlowCommand(Command):
 
 
 class QueryCommand(Command):
-    """Represents a query management command, e.g., `query run --on db my-query`."""
+    """Represents a query management command, e.g., `query run --on db --name my-query`."""
 
-    def __init__(
-        self,
-        subcommand: str,
-        name: str | None = None,
-        named_args: Dict[str, Any] | None = None,
-    ):
+    def __init__(self, subcommand: str, named_args: Dict[str, Any]):
         self.subcommand = subcommand
-        self.name = name
-        self.named_args = named_args or {}
+        self.named_args = named_args
 
     async def execute(
         self,
@@ -347,13 +335,27 @@ class QueryCommand(Command):
         status: Status,
         piped_input: Any = None,
     ) -> Any:
-        """
-        This method is a placeholder to satisfy the abstract base class.
-        The actual logic is handled by the CommandExecutor, which delegates to
-        the appropriate QueryManager method based on the subcommand.
-        """
         raise NotImplementedError(
-            "QueryCommand execution is handled by the CommandExecutor's dispatch logic."
+            "QueryCommand execution is handled by CommandExecutor."
+        )
+
+
+class ScriptCommand(Command):
+    """Represents a script management command, e.g., `script run --name my-script`."""
+
+    def __init__(self, subcommand: str, named_args: Dict[str, Any]):
+        self.subcommand = subcommand
+        self.named_args = named_args
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        raise NotImplementedError(
+            "ScriptCommand execution is handled by CommandExecutor."
         )
 
 
@@ -377,31 +379,6 @@ class ConnectionCommand(Command):
         """
         raise NotImplementedError(
             "ConnectionCommand execution is handled by the CommandExecutor's dispatch logic."
-        )
-
-
-class ScriptCommand(Command):
-    """Represents a script management command, e.g., `script run my-script`."""
-
-    def __init__(
-        self,
-        subcommand: str,
-        name: str | None = None,
-        args: Dict[str, Any] | None = None,
-    ):
-        self.subcommand = subcommand
-        self.name = name
-        self.args = args or {}
-
-    async def execute(
-        self,
-        state: SessionState,
-        service: ConnectorService,
-        status: Status,
-        piped_input: Any = None,
-    ) -> Any:
-        raise NotImplementedError(
-            "ScriptCommand execution is handled by CommandExecutor."
         )
 
 
@@ -497,4 +474,40 @@ class CompileCommand(Command):
         piped_input: Any = None,
     ) -> Any:
         # This will be handled by the executor's dispatch logic
+        raise NotImplementedError
+
+
+class WorkspaceCommand(Command):
+    """Represents a workspace management command."""
+
+    def __init__(self, subcommand: str, args: Dict[str, Any]):
+        self.subcommand = subcommand
+        self.args = args
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
+        raise NotImplementedError(
+            "WorkspaceCommand execution is handled by CommandExecutor."
+        )
+
+
+class FindCommand(Command):
+    """Represents a VFS find command."""
+
+    def __init__(self, query: Optional[str], args: Dict[str, Any]):
+        self.query = query
+        self.args = args
+
+    async def execute(
+        self,
+        state: SessionState,
+        service: ConnectorService,
+        status: Status,
+        piped_input: Any = None,
+    ) -> Any:
         raise NotImplementedError

@@ -1,3 +1,5 @@
+# [REPLACE] /home/dpwanjala/repositories/cx-shell/src/cx_shell/interactive/grammar/cx.lark
+
 ?start: expression
 expression: pipeline
 pipeline: command_unit (VBAR command_unit)*
@@ -17,11 +19,11 @@ columns_option: "--cx-columns" column_list
 query_option: "--cx-query" STRING
 column_list: CNAME ("," CNAME)*
 
-# --- COMMAND DEFINITIONS ---
-builtin_command: connections_command | help_command | inspect_command | connect_command | session_command | variable_command | flow_command | query_command | script_command | connection_command | open_command | app_command | agent_command | process_command | compile_command
+// --- COMMAND DEFINITIONS ---
 
-dot_notation_command: CNAME "." CNAME "(" [arguments] ")"
-dot_notation_pos_action: CNAME "." CNAME "(" STRING ")"
+dot_notation_command: CNAME "." CNAME "(" [arguments | value] ")"
+builtin_command: connections_command | help_command | inspect_command | connect_command | session_command | variable_command | flow_command | query_command | script_command | connection_command | open_command | app_command | agent_command | process_command | compile_command | workspace_command | find_command
+
 connect_command: "connect" ARG "--as" ARG
 connections_command: "connections"
 help_command: "help"
@@ -29,51 +31,72 @@ inspect_command: "inspect" ARG
 agent_command: "agent" STRING
 
 session_command: "session" session_subcommand
-session_subcommand: "list" -> session_list | "status" -> session_status | "save" ARG -> session_save | "load" ARG -> session_load | "rm" ARG -> session_rm
+session_subcommand: "list" -> session_list
+    | "status" -> session_status
+    | "save" ARG -> session_save
+    | "load" ARG -> session_load
+    | "rm" ARG -> session_rm
 
 variable_command: ("var" | "vars") variable_subcommand
-variable_subcommand: "list" -> variable_list | "rm" ARG -> variable_rm
+variable_subcommand: "list" -> variable_list
+    | "rm" ARG -> variable_rm
 
+// --- DEFINITIVE, SIMPLIFIED, and FLEXIBLE STRUCTURE for RUN commands ---
+// All run commands now accept a mix of named arguments (--flags) and key-value pairs in any order.
 flow_command: "flow" flow_subcommand
-flow_subcommand: "list" -> flow_list | "run" ARG kv_pair* -> flow_run
+flow_subcommand: "list" -> flow_list
+    | "run" (named_argument | kv_pair)* -> flow_run
 
 query_command: "query" query_subcommand
-query_subcommand: "list" -> query_list | "run" ARG "on=" ARG kv_pair* -> query_run
+query_subcommand: "list" -> query_list
+    | "run" (named_argument | kv_pair)* -> query_run
 
 script_command: "script" script_subcommand
-script_subcommand: "list" -> script_list | "run" ARG kv_pair* -> script_run
+script_subcommand: "list" -> script_list
+    | "run" (named_argument | kv_pair)* -> script_run
+// --- END ---
 
-# --- THIS IS THE FINAL, UNAMBIGUOUS STRUCTURE FOR ALL COMMANDS ---
 connection_command: "connection" connection_subcommand
 connection_subcommand: "list" -> connection_list
-                     | "create" named_argument* -> connection_create
+    | "create" named_argument* -> connection_create
 
 open_command: "open" open_args? -> open_command_handler
 open_args: (JINJA_BLOCK | ARG | named_argument)+
 
 app_command: "app" app_subcommand
 app_subcommand: "list" -> app_list
-              | "install" named_argument+ -> app_install
-              | "uninstall" ARG -> app_uninstall
-              | "sync" -> app_sync
-              | "package" ARG -> app_package
-              | "search" [ARG] -> app_search
+    | "install" named_argument+ -> app_install
+    | "uninstall" ARG -> app_uninstall
+    | "sync" -> app_sync
+    | "package" ARG -> app_package
+    | "search" [ARG] -> app_search
 
 compile_command: "compile" named_argument+ -> compile_command_with_args
-# --- END FINAL FIX ---
 
 process_command: "process" process_subcommand
-process_subcommand: "list" -> process_list | "logs" ARG ["--follow"] -> process_logs | "stop" ARG -> process_stop
+process_subcommand: "list" -> process_list
+    | "logs" ARG ["--follow"] -> process_logs
+    | "stop" ARG -> process_stop
 
-# --- Argument & Terminal Definitions ---
+workspace_command: "workspace" workspace_subcommand
+workspace_subcommand: "list" -> workspace_list
+    | "add" ARG -> workspace_add
+    | "remove" ARG -> workspace_remove
+    | "index" named_argument* -> workspace_index  # <-- CHANGED
+
+find_command: "find" (STRING | named_argument | kv_pair)* -> find_command
+
+// --- Argument & Terminal Definitions ---
+
 arguments: (kw_argument ("," kw_argument)*)
 kw_argument: CNAME "=" value
 kv_pair: CNAME "=" value
-named_argument: FLAG (STRING | ARG)
-FLAG.1: /--[a-zA-Z0-9_-]+/
-ARG: /[\/a-zA-Z0-9_:\-.~+@]+/
-JINJA_BLOCK: /\{\{.*?\}\}/
-STRING : /(\".*?\"|\'.*?\')/
+named_argument: FLAG [(STRING | ARG)]
+
+FLAG.1: /--[a-zA-Z0-9-]+/
+ARG: /[a-zA-Z0-9_:\-.~+\/@]+/
+JINJA_BLOCK: /\{\{[^}]*\}\}/
+STRING : /(\"[^\"]*\"|\'[^\']*\')/
 VBAR: "|"
 %import common.SIGNED_NUMBER -> NUMBER
 %import common.CNAME

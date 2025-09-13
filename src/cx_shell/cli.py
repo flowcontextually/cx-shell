@@ -3,6 +3,7 @@ import functools
 import importlib.metadata
 import json
 import logging
+from pathlib import Path
 import shlex
 import shutil
 import sys
@@ -149,71 +150,124 @@ def main_callback(
 
 @app.command()
 @handle_exceptions
-def init():
-    """Initializes the `~/.cx` workspace with default assets and configurations."""
-    # --- THIS IS THE FIX ---
-    # Import each constant from its correct, canonical source file.
+def init(
+    project_name: Optional[str] = typer.Option(
+        None,
+        "--project",
+        "-p",
+        help="Initialize a new project directory with the recommended structure.",
+    ),
+):
+    """Initializes the `~/.cx` workspace or a new project directory."""
     from cx_shell.utils import CX_HOME
-    from cx_shell.engine.connector.config import BLUEPRINTS_BASE_PATH
-    # --- END FIX ---
 
-    console.print("[bold green]Initializing Contextually environment...[/bold green]")
-    connections_dir = CX_HOME / "connections"
-    # The rest of the function remains the same, as it now has the correct variables.
-    dirs_to_create = [
-        connections_dir,
-        CX_HOME / "secrets",
-        BLUEPRINTS_BASE_PATH / "user",
-        CX_HOME / "flows",
-        CX_HOME / "queries",
-        CX_HOME / "scripts",
-    ]
-    for d in dirs_to_create:
-        d.mkdir(parents=True, exist_ok=True)
-        console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
-    try:
-        assets_root = get_assets_root()
-        source_connections_dir = assets_root / "connections"
-        if source_connections_dir.is_dir():
-            for conn_asset in source_connections_dir.glob("*.conn.yaml"):
-                target_path = connections_dir / conn_asset.name
-                if not target_path.exists():
-                    shutil.copy(conn_asset, target_path)
-                    console.print(
-                        f"✅ Created sample connection: [dim]{target_path}[/dim]"
-                    )
-                else:
-                    console.print(
-                        f"☑️  Connection already exists, skipping: [dim]{target_path}[/dim]"
-                    )
-    except Exception as e:
-        console.print(f"[bold red]Error copying sample connections:[/bold red] {e}")
-    try:
-        assets_root = get_assets_root()
-        bundled_blueprints_root = assets_root / "blueprints" / "community"
-        if bundled_blueprints_root.is_dir():
-            for blueprint_source_dir in bundled_blueprints_root.iterdir():
-                if blueprint_source_dir.is_dir():
-                    blueprint_name = blueprint_source_dir.name
-                    manifest_path = blueprint_source_dir / "blueprint.cx.yaml"
-                    if not manifest_path.is_file():
-                        continue
-                    with open(manifest_path, "r") as f:
-                        version = yaml.safe_load(f).get("version", "0.0.0").lstrip("v")
-                    target_dir = (
-                        BLUEPRINTS_BASE_PATH / "community" / blueprint_name / version
-                    )
-                    if target_dir.exists():
-                        shutil.rmtree(target_dir)
-                    shutil.copytree(blueprint_source_dir, target_dir)
-                    console.print(
-                        f"✅ Copied sample blueprint '{blueprint_name}' to: [dim]{target_dir}[/dim]"
-                    )
-    except Exception as e:
-        console.print(f"[bold red]Error copying sample blueprints:[/bold red] {e}")
+    if project_name:
+        # --- PROJECT INITIALIZATION LOGIC ---
+        project_dir = Path.cwd() / project_name
+        if project_dir.exists():
+            console.print(
+                f"[bold red]Error:[/bold red] Directory '{project_name}' already exists."
+            )
+            raise typer.Exit(code=1)
 
-    console.print("\n[bold green]Initialization complete![/bold green]")
-    console.print("Run `cx` to start the interactive shell.")
+        console.print(
+            f"🚀 Initializing new cx project in [bold cyan]{project_dir}[/bold cyan]..."
+        )
+
+        project_subdirs = [
+            "flows",
+            "queries",
+            "scripts",
+            "templates",
+            "outputs",
+            "examples",
+        ]
+        for subdir in project_subdirs:
+            (project_dir / subdir).mkdir(parents=True, exist_ok=True)
+            console.print(f"✅ Created directory: [dim]{subdir}/[/dim]")
+
+        # Create a default .gitignore
+        gitignore_content = "*.old\n*.bak\n\n# Local outputs\noutputs/\n"
+        (project_dir / ".gitignore").write_text(gitignore_content)
+        console.print("✅ Created [dim].gitignore[/dim]")
+
+        # Scaffold a README.md with a placeholder title
+        readme_content = f"# {project_name.replace('-', ' ').title()} Project\n\nDescribe the purpose of this project here.\n"
+        (project_dir / "README.md").write_text(readme_content)
+        console.print("✅ Created [dim]README.md[/dim]")
+
+        console.print("\n[bold green]Project initialization complete![/bold green]")
+        console.print(f"Navigate to your new project: [bold]cd {project_name}[/bold]")
+
+    else:
+        # --- GLOBAL WORKSPACE INITIALIZATION LOGIC (Unchanged) ---
+        from cx_shell.engine.connector.config import BLUEPRINTS_BASE_PATH
+
+        console.print(
+            "[bold green]Initializing global `~/.cx` workspace...[/bold green]"
+        )
+        connections_dir = CX_HOME / "connections"
+        dirs_to_create = [
+            connections_dir,
+            CX_HOME / "secrets",
+            BLUEPRINTS_BASE_PATH / "user",
+            CX_HOME / "flows",
+            CX_HOME / "queries",
+            CX_HOME / "scripts",
+        ]
+        for d in dirs_to_create:
+            d.mkdir(parents=True, exist_ok=True)
+            console.print(f"✅ Ensured directory exists: [dim]{d}[/dim]")
+        try:
+            assets_root = get_assets_root()
+            source_connections_dir = assets_root / "connections"
+            if source_connections_dir.is_dir():
+                for conn_asset in source_connections_dir.glob("*.conn.yaml"):
+                    target_path = connections_dir / conn_asset.name
+                    if not target_path.exists():
+                        shutil.copy(conn_asset, target_path)
+                        console.print(
+                            f"✅ Created sample connection: [dim]{target_path}[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"☑️  Connection already exists, skipping: [dim]{target_path}[/dim]"
+                        )
+        except Exception as e:
+            console.print(f"[bold red]Error copying sample connections:[/bold red] {e}")
+        try:
+            assets_root = get_assets_root()
+            bundled_blueprints_root = assets_root / "blueprints" / "community"
+            if bundled_blueprints_root.is_dir():
+                for blueprint_source_dir in bundled_blueprints_root.iterdir():
+                    if blueprint_source_dir.is_dir():
+                        blueprint_name = blueprint_source_dir.name
+                        manifest_path = blueprint_source_dir / "blueprint.cx.yaml"
+                        if not manifest_path.is_file():
+                            continue
+                        with open(manifest_path, "r") as f:
+                            version = (
+                                yaml.safe_load(f).get("version", "0.0.0").lstrip("v")
+                            )
+                        target_dir = (
+                            BLUEPRINTS_BASE_PATH
+                            / "community"
+                            / blueprint_name
+                            / version
+                        )
+                        if target_dir.exists():
+                            shutil.rmtree(target_dir)
+                        shutil.copytree(blueprint_source_dir, target_dir)
+                        console.print(
+                            f"✅ Copied sample blueprint '{blueprint_name}' to: [dim]{target_dir}[/dim]"
+                        )
+        except Exception as e:
+            console.print(f"[bold red]Error copying sample blueprints:[/bold red] {e}")
+
+        console.print(
+            "\n[bold green]Global workspace initialization complete![/bold green]"
+        )
+        console.print("Run `cx` to start the interactive shell.")
 
 
 @app.command()

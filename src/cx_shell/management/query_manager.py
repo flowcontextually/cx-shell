@@ -1,63 +1,135 @@
-from typing import List, Dict, Any
+# [REPLACE] /home/dpwanjala/repositories/cx-shell/src/cx_shell/management/query_manager.py
 
-from ..engine.connector.config import CX_HOME
+from pathlib import Path
+import re
+from typing import List, Dict, Any, Tuple
+
+import structlog
 from ..engine.connector.service import ConnectorService
 from ..interactive.session import SessionState
-from ..interactive.commands import create_script_for_step
-from cx_core_schemas.connector_script import ConnectorStep, RunSqlQueryAction
+from .workspace_manager import WorkspaceManager  # <-- NEW IMPORT
+from cx_core_schemas.connector_script import (
+    ConnectorScript,
+    ConnectorStep,
+    RunSqlQueryAction,
+)
 
-QUERIES_DIR = CX_HOME / "queries"
+logger = structlog.get_logger(__name__)
 
 
 class QueryManager:
-    """Handles listing and running .sql files."""
+    """Handles logic for listing and running .sql files from the multi-rooted workspace."""
 
     def __init__(self):
-        QUERIES_DIR.mkdir(exist_ok=True, parents=True)
+        """Initializes the manager with the WorkspaceManager."""
+        self.workspace_manager = WorkspaceManager()
+
+    def _get_search_paths(self) -> List[Tuple[str, Path]]:
+        """
+        Defines the prioritized search paths for queries by querying the WorkspaceManager.
+        Returns a list of (namespace, path_object) tuples.
+        """
+        search_paths = []
+        all_roots = self.workspace_manager.get_roots()
+
+        for root_path in all_roots:
+            namespace = "system" if ".cx" in str(root_path) else root_path.name
+            query_dir = root_path / "queries"
+            search_paths.append((namespace, query_dir))
+
+        return search_paths
 
     def list_queries(self) -> List[Dict[str, str]]:
-        """Lists all available queries, returning structured data."""
+        """Lists all available queries from all registered workspace roots."""
         queries_data = []
-        query_files = list(QUERIES_DIR.glob("*.sql"))
-        if not query_files:
-            return queries_data
+        found_names = set()
+        desc_pattern = re.compile(r"^\s*--\s*Description:\s*(.*)", re.IGNORECASE)
 
-        for q_file in sorted(query_files):
-            queries_data.append({"Name": q_file.stem})
+        for namespace, search_path in self._get_search_paths():
+            if not search_path.is_dir():
+                continue
 
+            for q_file in sorted(search_path.glob("*.sql")):
+                query_name = q_file.stem
+                namespaced_id = f"{namespace}/{query_name}"
+                if namespaced_id in found_names:
+                    continue
+                found_names.add(namespaced_id)
+
+                description = "No description."
+                try:
+                    with open(q_file, "r") as f:
+                        first_line = f.readline()
+                        match = desc_pattern.match(first_line)
+                        if match:
+                            description = match.group(1).strip()
+                except Exception:
+                    description = "[red]Error reading file[/red]"
+
+                queries_data.append(
+                    {
+                        "Name": namespaced_id,
+                        "Description": description,
+                        "Source": namespace,
+                    }
+                )
         return queries_data
+
+    def _find_query(self, name: str) -> Path:
+        """Finds a query by its potentially namespaced name across all workspace roots."""
+        if "/" in name:
+            namespace, query_name = name.split("/", 1)
+            for ns, search_path in self._get_search_paths():
+                if ns == namespace:
+                    query_path = search_path / f"{query_name}.sql"
+                    if query_path.exists():
+                        return query_path
+        else:
+            for _, search_path in self._get_search_paths():
+                query_path = search_path / f"{name}.sql"
+                if query_path.exists():
+                    return query_path
+
+        raise FileNotFoundError(
+            f"Query '{name}' not found in any registered workspace root."
+        )
 
     async def run_query(
         self,
         state: SessionState,
         service: ConnectorService,
-        name: str,
-        on_alias: str,
-        args: Dict[str, Any],
+        named_args: Dict[str, Any],
     ) -> Any:
-        query_file = QUERIES_DIR / f"{name}.sql"
-        if not query_file.exists():
-            raise FileNotFoundError(f"Query '{name}' not found at {query_file}")
+        """Executes a query by name, finding it in the multi-rooted workspace."""
+        logger.debug("query_manager.run_query.received", named_args=named_args)
+
+        name = named_args.pop("name", None)
+        on_alias = named_args.pop("on", None)
+        params = named_args.get("params", {})
+
+        if not name or not on_alias:
+            raise ValueError(
+                "`query run` requires both '--name <query_name>' and '--on <connection_alias>' arguments."
+            )
+
+        query_file = self._find_query(name)
+        logger.info("query_manager.run_query.resolved", query_path=str(query_file))
+
         if on_alias not in state.connections:
             raise ValueError(f"Connection alias '{on_alias}' is not active.")
 
         connection_source = state.connections[on_alias]
         query_content = query_file.read_text()
+
         step = ConnectorStep(
             id=f"interactive_query_{name}",
             name=f"Interactive query {name}",
             connection_source=connection_source,
             run=RunSqlQueryAction(
-                action="run_sql_query", query=query_content, parameters=args
+                action="run_sql_query", query=query_content, parameters=params
             ),
         )
-        script = create_script_for_step(step)
-
-        from rich.console import Console
-
-        Console().print(
-            f"[bold blue]Running query '{name}' on connection '{on_alias}'...[/bold blue]"
-        )
+        script = ConnectorScript(name=f"Interactive script for {name}", steps=[step])
 
         results = await service.engine.run_script_model(
             script, session_variables=state.variables
