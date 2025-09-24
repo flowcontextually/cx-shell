@@ -216,11 +216,17 @@ class ScriptEngine:
             raise ValueError(
                 f"Step '{validated_step.name}' requires a connection_source for a stateless action."
             )
+
         if action.action == "run_sql_query":
             query_source = action.query
+            print("query_source")
+            print(query_source)
+
             query_string = query_source
             if query_source.startswith(("file:", "app-asset:")):
                 query_path = resolve_path(query_source)
+                print("query_path")
+                print(query_path)
                 query_string = query_path.read_text(encoding="utf-8")
             return await strategy.execute_query(
                 query_string, action.parameters, connection, secrets
@@ -246,13 +252,142 @@ class ScriptEngine:
             f"Action '{action.action}' is not implemented by the '{strategy.strategy_key}' strategy."
         )
 
+    # async def run_script_model(
+    #     self,
+    #     script_model: ConnectorScript,
+    #     script_input: Dict[str, Any] = None,
+    #     session_variables: Dict[str, Any] = None,
+    #     no_cache: bool = False,
+    # ):
+    #     log = logger.bind(script_name=script_model.name, no_cache=no_cache)
+    #     if no_cache:
+    #         log.info("engine.run.cache_disabled")
+
+    #     log.info("engine.run.begin")
+    #     run_id = f"run_{uuid.uuid4().hex[:12]}"
+    #     run_dir = RUNS_DIR / run_id
+    #     run_dir.mkdir(parents=True)
+    #     user_params = script_input or {}
+    #     manifest = RunManifest(
+    #         run_id=run_id,
+    #         flow_id=script_model.name,
+    #         status="running",
+    #         timestamp_utc=datetime.now(timezone.utc),
+    #         parameters=user_params,
+    #         steps=[],
+    #     )
+    #     dag = self._build_dependency_graph(script_model.steps)
+    #     topological_generations = list(nx.topological_generations(dag))
+    #     run_context = {"script_input": user_params, "steps": {}}
+    #     final_results: Dict[str, Any] = {}
+    #     try:
+    #         for generation in topological_generations:
+    #             for step_id in generation:
+    #                 step_data = dag.nodes[step_id]["step_data"]
+    #                 parent_hashes = {
+    #                     pred: run_context["steps"][pred]["output_hash"]
+    #                     for pred in dag.predecessors(step_id)
+    #                 }
+    #                 cache_key = self._calculate_cache_key(step_data, parent_hashes)
+    #                 cached_step = None
+    #                 if not no_cache:
+    #                     cached_step = self._find_cached_step(cache_key)
+    #                 if cached_step:
+    #                     step_result_obj = cached_step
+    #                     step_result_obj.cache_hit = True
+    #                     raw_result = (
+    #                         json.loads(
+    #                             self.cache_manager.read_bytes(cached_step.output_hash)
+    #                         )
+    #                         if cached_step.output_hash
+    #                         else None
+    #                     )
+    #                 else:
+    #                     raw_result = await self._execute_step(
+    #                         step_data, run_context, session_variables
+    #                     )
+    #                     output_hash = self.cache_manager.write_json(raw_result)
+    #                     step_result_obj = StepResult(
+    #                         step_id=step_id,
+    #                         status="completed",
+    #                         summary="Completed successfully.",
+    #                         cache_key=cache_key,
+    #                         cache_hit=False,
+    #                         output_hash=output_hash,
+    #                     )
+    #                 manifest.steps.append(step_result_obj)
+    #                 final_results[step_data.name] = raw_result
+    #                 run_context["steps"][step_id] = {
+    #                     "result": raw_result,
+    #                     "outputs": {},
+    #                     "output_hash": step_result_obj.output_hash,
+    #                 }
+
+    #                 # --- DEFINITIVE FIX for Artifact Manifest Population ---
+    #                 # After a step runs, check its raw result for an 'artifacts' dictionary.
+    #                 # This is the contract with the TransformerService.
+    #                 if isinstance(raw_result, dict) and "artifacts" in raw_result:
+    #                     log.debug(
+    #                         "engine.artifacts.found",
+    #                         step_id=step_id,
+    #                         artifacts=raw_result["artifacts"],
+    #                     )
+    #                     # We convert the file paths into proper Artifact objects.
+    #                     for artifact_type, paths in raw_result["artifacts"].items():
+    #                         path_list = paths if isinstance(paths, list) else [paths]
+    #                         for file_path_str in path_list:
+    #                             try:
+    #                                 file_path = Path(
+    #                                     file_path_str.replace("file://", "")
+    #                                 )
+    #                                 file_bytes = file_path.read_bytes()
+    #                                 content_hash = self.cache_manager.write(file_bytes)
+    #                                 artifact_name = file_path.name
+    #                                 manifest.artifacts[artifact_name] = Artifact(
+    #                                     content_hash=content_hash,
+    #                                     mime_type="application/octet-stream",  # Simplified for now
+    #                                     size_bytes=file_path.stat().st_size,
+    #                                 )
+    #                             except Exception as e:
+    #                                 logger.warn(
+    #                                     "engine.artifact.processing_failed",
+    #                                     path=file_path_str,
+    #                                     error=str(e),
+    #                                 )
+    #                 # --- END FIX ---
+
+    #         manifest.status = "completed"
+    #         log.info("engine.run.success")
+    #         return final_results
+    #     except Exception as e:
+    #         manifest.status = "failed"
+    #         log.error("engine.run.failed", error=str(e), exc_info=True)
+    #         failed_step_result = StepResult(
+    #             step_id="error",
+    #             status="failed",
+    #             summary=str(e),
+    #             cache_key="",
+    #             cache_hit=False,
+    #         )
+    #         manifest.steps.append(failed_step_result)
+    #         final_results["error"] = str(e)
+    #         return {**final_results, "error": f"{type(e).__name__}: {e}"}
+    #     finally:
+    #         manifest_path = run_dir / "manifest.json"
+    #         manifest_path.write_text(manifest.model_dump_json(indent=2))
+    #         log.info("engine.run.manifest_written", path=str(manifest_path))
+
     async def run_script_model(
         self,
         script_model: ConnectorScript,
         script_input: Dict[str, Any] = None,
         session_variables: Dict[str, Any] = None,
+        no_cache: bool = False,
     ):
-        log = logger.bind(script_name=script_model.name)
+        log = logger.bind(script_name=script_model.name, no_cache=no_cache)
+        if no_cache:
+            log.info("engine.run.cache_disabled")
+
         log.info("engine.run.begin")
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         run_dir = RUNS_DIR / run_id
@@ -279,7 +414,9 @@ class ScriptEngine:
                         for pred in dag.predecessors(step_id)
                     }
                     cache_key = self._calculate_cache_key(step_data, parent_hashes)
-                    cached_step = self._find_cached_step(cache_key)
+                    cached_step = None
+                    if not no_cache:
+                        cached_step = self._find_cached_step(cache_key)
                     if cached_step:
                         step_result_obj = cached_step
                         step_result_obj.cache_hit = True
@@ -303,24 +440,54 @@ class ScriptEngine:
                             cache_hit=False,
                             output_hash=output_hash,
                         )
+
+                    # --- START OF FIX: Implement output processing ---
+                    import jmespath
+
+                    step_outputs = {}
+                    if step_data.outputs:
+                        log.debug(
+                            "engine.outputs.processing",
+                            step_id=step_id,
+                            outputs=step_data.outputs,
+                        )
+                        for output_name, jmespath_query in step_data.outputs.items():
+                            try:
+                                extracted_value = jmespath.search(
+                                    jmespath_query, raw_result
+                                )
+                                step_outputs[output_name] = extracted_value
+                                log.debug(
+                                    "engine.outputs.extracted",
+                                    output_name=output_name,
+                                    value=extracted_value,
+                                )
+                            except Exception as e:
+                                log.warn(
+                                    "engine.outputs.jmespath_failed",
+                                    query=jmespath_query,
+                                    error=str(e),
+                                )
+                                step_outputs[output_name] = None
+                    # --- END OF FIX ---
+
                     manifest.steps.append(step_result_obj)
                     final_results[step_data.name] = raw_result
+
+                    # --- START OF FIX: Update the run_context correctly ---
                     run_context["steps"][step_id] = {
                         "result": raw_result,
-                        "outputs": {},
+                        "outputs": step_outputs,  # <-- Use the extracted outputs here
                         "output_hash": step_result_obj.output_hash,
                     }
+                    # --- END OF FIX ---
 
-                    # --- DEFINITIVE FIX for Artifact Manifest Population ---
-                    # After a step runs, check its raw result for an 'artifacts' dictionary.
-                    # This is the contract with the TransformerService.
                     if isinstance(raw_result, dict) and "artifacts" in raw_result:
                         log.debug(
                             "engine.artifacts.found",
                             step_id=step_id,
                             artifacts=raw_result["artifacts"],
                         )
-                        # We convert the file paths into proper Artifact objects.
                         for artifact_type, paths in raw_result["artifacts"].items():
                             path_list = paths if isinstance(paths, list) else [paths]
                             for file_path_str in path_list:
@@ -333,7 +500,7 @@ class ScriptEngine:
                                     artifact_name = file_path.name
                                     manifest.artifacts[artifact_name] = Artifact(
                                         content_hash=content_hash,
-                                        mime_type="application/octet-stream",  # Simplified for now
+                                        mime_type="application/octet-stream",
                                         size_bytes=file_path.stat().st_size,
                                     )
                                 except Exception as e:
@@ -342,7 +509,6 @@ class ScriptEngine:
                                         path=file_path_str,
                                         error=str(e),
                                     )
-                    # --- END FIX ---
 
             manifest.status = "completed"
             log.info("engine.run.success")
@@ -370,6 +536,7 @@ class ScriptEngine:
         script_path: Path,
         script_input: Dict[str, Any] = None,
         session_variables: Dict[str, Any] = None,
+        no_cache: bool = False,
     ):
         log = logger.bind(script_path=str(script_path))
         log.info("engine.load_script.begin")
@@ -377,5 +544,5 @@ class ScriptEngine:
             script_data = yaml.safe_load(f)
         script_model = ConnectorScript(**script_data)
         return await self.run_script_model(
-            script_model, script_input, session_variables
+            script_model, script_input, session_variables, no_cache=no_cache
         )

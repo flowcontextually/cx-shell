@@ -1,5 +1,3 @@
-# [REPLACE] /home/dpwanjala/repositories/cx-shell/src/cx_shell/management/flow_manager.py
-
 from pathlib import Path
 import yaml
 from typing import List, Dict, Any, Tuple
@@ -80,6 +78,7 @@ class FlowManager:
         Finds a flow by its potentially namespaced name across all workspace roots.
         """
         # If the name is already namespaced (e.g., "acme-ops/my-flow")
+        # name = "system/cxcontext"
         if "/" in name:
             namespace, flow_name = name.split("/", 1)
             for ns, search_path in self._get_search_paths():
@@ -108,6 +107,7 @@ class FlowManager:
         logger.debug("flow_manager.run_flow.received", named_args=named_args)
 
         name = named_args.pop("name", None)
+        no_cache = named_args.pop("no-cache", False)  # <-- ADD THIS LINE
         params = named_args.get("params", {})
 
         if not name:
@@ -120,4 +120,5 @@ class FlowManager:
             script_path=flow_path,
             script_input=params,
             session_variables=state.variables,
+            no_cache=no_cache,
         )

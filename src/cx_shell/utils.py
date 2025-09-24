@@ -24,13 +24,61 @@ def get_assets_root() -> Path:
     return get_pkg_root() / "assets"
 
 
+# def resolve_path(path_str: str) -> Path:
+#     """
+#     Expands common path patterns into absolute paths.
+#     - `~` is expanded to the user's home directory.
+#     - `app-asset:` is expanded relative to the CX_HOME directory.
+#     """
+#     if path_str.startswith("app-asset:"):
+#         relative_path = path_str.split(":", 1)[1]
+#         return (CX_HOME / relative_path).resolve()
+#     return Path(path_str).expanduser().resolve()
+
+
+# def resolve_path(path_str: str) -> Path:
+#     """
+#     Expands common path patterns into absolute paths.
+#     - `~` is expanded to the user's home directory.
+#     - `app-asset:` is expanded relative to the CX_HOME directory.
+#     - `file://` URIs are correctly parsed to an absolute path.
+#     """
+#     if path_str.startswith("app-asset:"):
+#         relative_path = path_str.split(":", 1)[1]
+#         return (CX_HOME / relative_path).resolve()
+
+#     # --- THIS IS THE NEW, CRITICAL LOGIC ---
+#     if path_str.startswith("file://"):
+#         # Strip the scheme and return an absolute path object
+#         return Path(path_str[7:]).resolve()
+#     # --- END NEW LOGIC ---
+
+
+#     # Fallback for standard paths like `~/foo` or `./bar`
+#     return Path(path_str).expanduser().resolve()\
 def resolve_path(path_str: str) -> Path:
     """
     Expands common path patterns into absolute paths.
     - `~` is expanded to the user's home directory.
     - `app-asset:` is expanded relative to the CX_HOME directory.
+    - `file:` URIs are correctly parsed to an absolute path.
     """
     if path_str.startswith("app-asset:"):
         relative_path = path_str.split(":", 1)[1]
         return (CX_HOME / relative_path).resolve()
+
+    # --- THIS IS THE DEFINITIVE FIX ---
+    # Handle the "file:" URI scheme, robustly handling single or triple slashes.
+    if path_str.startswith("file:"):
+        # Find the start of the actual path after the scheme
+        path_part = path_str.split(":", 1)[1]
+        # Strip any leading slashes to get the absolute path
+        clean_path = path_part.lstrip("/")
+        # The path must start with a slash to be absolute on Unix-like systems.
+        # On Windows, it might start with a drive letter.
+        # Path() handles this correctly if the path is absolute.
+        return Path(f"/{clean_path}").resolve()
+    # --- END DEFINITIVE FIX ---
+
+    # Fallback for standard paths like `~/foo` or `./bar`
     return Path(path_str).expanduser().resolve()

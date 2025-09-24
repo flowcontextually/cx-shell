@@ -3,6 +3,7 @@ import functools
 import importlib.metadata
 import json
 import logging
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -142,6 +143,16 @@ def main_callback(
     ),
 ):
     """Main entry point. Handles global options and starts the REPL."""
+    # --- START OF FIX ---
+    # Set up the shared VFS root as an environment variable.
+    # This ensures all components (connector, transformer, cache) use the same base path.
+    from .utils import CX_HOME
+
+    vfs_root = CX_HOME / "data"
+    vfs_root.mkdir(parents=True, exist_ok=True)
+    os.environ["VFS_ROOT"] = str(vfs_root)
+    # --- END OF FIX ---
+
     APP_STATE.verbose_mode = verbose
     setup_logging(verbose)
     if ctx.invoked_subcommand is None:

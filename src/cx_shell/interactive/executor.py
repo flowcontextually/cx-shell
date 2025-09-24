@@ -308,18 +308,22 @@ class CommandTransformer(Transformer):
 
         return FindCommand(query=query, args=named_args)
 
-    # --- DEFINITIVE FIX for run command argument handling ---
     def _process_run_args(self, *args):
-        # This helper now correctly separates --flags from key=value pairs
-        named_args = {
-            k.lstrip("-"): v
-            for k, v in args
-            if isinstance(k, str) and k.startswith("--")
-        }
-        params = {
-            k: v for k, v in args if not (isinstance(k, str) and k.startswith("--"))
-        }
-        named_args["params"] = dict(params)
+        """
+        Processes a list of (key, value) tuples from the parser into a clean
+        dictionary suitable for the command managers. It separates structural
+        arguments (flags like --name) from user-defined parameters (key=value).
+        """
+        named_args = {}
+        params = {}
+        for k, v in args:
+            if k.startswith("--"):
+                # This is a structural flag (e.g., --name, --on)
+                named_args[k.lstrip("-")] = v
+            else:
+                # This is a user-defined parameter (e.g., status=Booked)
+                params[k] = v
+        named_args["params"] = params
         return named_args
 
     def flow_run(self, *args):
@@ -331,8 +335,6 @@ class CommandTransformer(Transformer):
     def script_run(self, *args):
         return ScriptCommand("run", named_args=self._process_run_args(*args))
 
-    # --- END FIX ---
-
     def arguments(self, *args):
         return dict(args)
 
@@ -343,9 +345,22 @@ class CommandTransformer(Transformer):
         return key.value, value
 
     def named_argument(self, flag, value=None):
-        # If a flag is present but has no value, it's a boolean flag, value is True.
-        # Otherwise, we use the provided value.
-        return flag.value, value if value is not None else True
+        """
+        Processes a flag and its optional value.
+        Critically, it evaluates STRING tokens to strip quotes.
+        """
+        final_value = value
+        if value is not None:
+            # Check if the value is a Lark Token and if its type is STRING
+            if hasattr(value, "type") and value.type == "STRING":
+                final_value = literal_eval(value.value)
+            # Handle other token types that have a .value attribute
+            elif hasattr(value, "value"):
+                final_value = value.value
+        else:
+            final_value = True  # Handle boolean flags like --rebuild
+
+        return (flag.value, final_value)
 
     def value(self, v):
         if hasattr(v, "type"):
